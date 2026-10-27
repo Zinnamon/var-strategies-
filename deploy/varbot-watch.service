@@ -1,0 +1,19 @@
+[Unit]
+Description=varbot live order books and impact alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=varbot
+WorkingDirectory=__APP_DIR__/app
+EnvironmentFile=__APP_DIR__/app/.env
+# WATCH_SYMBOLS, ALERT_PCT and ALERT_SIZE come from .env
+ExecStart=__APP_DIR__/venv/bin/varbot watch ${WATCH_SYMBOLS} --quiet --alert-pct ${ALERT_PCT} --alert-size ${ALERT_SIZE} --alert-telegram --serve 8080 --json-out __APP_DIR__/live.json
+Restart=always
+RestartSec=10
+# Bind the JSON endpoint to localhost only; put nginx or an SSH tunnel in front if needed.
+Environment=VARBOT_SERVE_HOST=127.0.0.1
+
+[Install]
+WantedBy=multi-user.target

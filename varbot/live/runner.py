@@ -159,8 +159,11 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(state: WatchState, port: int) -> ThreadingHTTPServer:
+    import os
+
     handler = type("Handler", (_Handler,), {"state": state})
-    server = ThreadingHTTPServer(("0.0.0.0", port), handler)
+    host = os.environ.get("VARBOT_SERVE_HOST", "127.0.0.1")  # set 0.0.0.0 to expose beyond the box
+    server = ThreadingHTTPServer((host, port), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 

@@ -116,12 +116,17 @@ float. Business is the research activity score. Flags call out the usual problem
 exhaustion, silent socials, low float, 90 %+ drawdowns, suspiciously low engagement for the
 follower count, no commits.
 
-## Scheduling
+## Running it on a server
 
-Run it on a cron and have it post to Telegram:
+See `deploy/README.md`. In short: `.github/workflows/scan.yml` runs the daily scan on
+GitHub Actions for free (without Binance, Bybit and OKX, which refuse US runner IPs), and
+`deploy/setup.sh` sets up a Hetzner or any Ubuntu VPS with a systemd timer for the scan
+and an always-on `watch` service that sends alerts to Telegram.
+
+A plain cron line works too:
 
 ```
-0 7 * * * cd /path/to/var-strategies- && .venv/bin/varbot scan --max-mcap 100m --out reports/ && .venv/bin/varbot notify reports/scan.md
+0 7 * * * cd /path/to/var-strategies- && .venv/bin/varbot scan --max-mcap 100m --out reports/ && .venv/bin/varbot notify reports/scan.md --max-messages 3
 ```
 
 ## Data sources and limits

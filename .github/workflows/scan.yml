@@ -1,0 +1,73 @@
+name: daily scan
+
+on:
+  schedule:
+    - cron: "17 7 * * *"   # 07:17 UTC every day
+  workflow_dispatch:
+    inputs:
+      max_mcap:
+        description: "Small-cap threshold in USD (e.g. 100m)"
+        default: "100m"
+      research:
+        description: "Run Claude business research (costs API usage)"
+        type: boolean
+        default: false
+      symbols:
+        description: "Optional comma-separated tickers to restrict to"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      VARBOT_CACHE_DIR: ${{ github.workspace }}/.varbot-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Restore HTTP cache
+        uses: actions/cache@v4
+        with:
+          path: .varbot-cache
+          key: varbot-cache-${{ github.run_id }}
+          restore-keys: varbot-cache-
+
+      # GitHub-hosted runners have US IPs. Binance, Bybit and OKX refuse API calls
+      # from the US, so only the venues that answer from there are swept here.
+      # Run the scan on a non-US VPS (deploy/) for complete Binance figures.
+      - name: Scan
+        run: |
+          EXTRA=""
+          if [ "${{ inputs.research }}" = "true" ]; then EXTRA="$EXTRA --research"; fi
+          if [ -n "${{ inputs.symbols }}" ]; then EXTRA="$EXTRA --symbols ${{ inputs.symbols }}"; fi
+          varbot scan \
+            --max-mcap "${{ inputs.max_mcap || '100m' }}" \
+            --venues coinbase,kraken,kucoin,gate,mexc,bitget,htx,cryptocom \
+            --out reports/ $EXTRA
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ github.run_id }}
+          path: reports/
+          retention-days: 30
+
+      - name: Send to Telegram
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        run: varbot notify reports/scan.md --max-messages 3

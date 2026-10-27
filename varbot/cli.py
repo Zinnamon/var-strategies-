@@ -196,7 +196,8 @@ def impact(symbol, sizes, moves, venue, quote) -> None:
 @click.option("--alert-size", default="100k", show_default=True)
 @click.option("--duration", type=float, default=None, help="Stop after N seconds (default: run until Ctrl-C).")
 @click.option("--quiet", is_flag=True, help="Do not print the table each tick (alerts still print).")
-def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, alert_size, duration, quiet) -> None:
+@click.option("--alert-telegram", is_flag=True, help="Also send alerts to the configured Telegram chat.")
+def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, alert_size, duration, quiet, alert_telegram) -> None:
     """Real-time order books over WebSockets: live impact table, JSON file and HTTP endpoint.
 
     Example: varbot watch STO,ERA --serve 8080 --json-out live.json --alert-pct 3
@@ -205,10 +206,21 @@ def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, al
 
     from varbot.live.runner import watch as _watch
 
+    if alert_telegram and not (SETTINGS.telegram_bot_token and SETTINGS.telegram_chat_id):
+        raise click.UsageError("--alert-telegram needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+
     def tick(text: str) -> None:
-        if quiet and not text.startswith(("ALERT", "clear")):
+        is_alert = text.startswith(("ALERT", "clear"))
+        if is_alert and alert_telegram:
+            from varbot.notify import send_telegram
+
+            try:
+                send_telegram(text)
+            except Exception as exc:  # noqa: BLE001 - never let delivery kill the watch loop
+                click.echo(f"telegram delivery failed: {exc}", err=True)
+        if quiet and not is_alert:
             return
-        click.echo(text + ("\n" if not text.startswith(("ALERT", "clear")) else ""))
+        click.echo(text + ("" if is_alert else "\n"))
 
     try:
         asyncio.run(_watch(
@@ -225,11 +237,12 @@ def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, al
 @main.command()
 @click.argument("path", type=click.Path(exists=True, path_type=Path))
 @click.option("--chat-id", default=None)
-def notify(path: Path, chat_id) -> None:
+@click.option("--max-messages", type=int, default=None, help="Send at most N Telegram messages (4000 chars each); the rest is dropped.")
+def notify(path: Path, chat_id, max_messages) -> None:
     """Send a report file to the configured Telegram chat."""
     from varbot.notify import send_telegram
 
-    n = send_telegram(path.read_text(), chat_id=chat_id)
+    n = send_telegram(path.read_text(), chat_id=chat_id, max_messages=max_messages)
     click.echo(f"sent {n} message(s)")
 
 

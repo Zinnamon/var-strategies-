@@ -1,0 +1,14 @@
+[Unit]
+Description=varbot daily scan of Variational-listed tokens
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=varbot
+WorkingDirectory=__APP_DIR__/app
+EnvironmentFile=__APP_DIR__/app/.env
+ExecStart=__APP_DIR__/venv/bin/varbot scan --max-mcap ${SCAN_MAX_MCAP} --out __APP_DIR__/reports $SCAN_EXTRA_ARGS
+ExecStartPost=-__APP_DIR__/venv/bin/varbot notify __APP_DIR__/reports/scan.md --max-messages 3
+TimeoutStartSec=4h
+Nice=10
