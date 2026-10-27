@@ -212,6 +212,120 @@ def build_fundamentals(coin_id: str | None, note: str, market: dict | None, deta
     return f
 
 
+TICKERS_TTL = 30 * 60
+
+# CoinGecko exchange identifiers for the centralised venues we track order books on.
+MAJOR_CEX = {
+    "binance": "Binance",
+    "bybit_spot": "Bybit",
+    "okex": "OKX",
+    "gdax": "Coinbase",
+    "kraken": "Kraken",
+    "kucoin": "KuCoin",
+    "gate": "Gate",
+    "mxc": "MEXC",
+    "bitget": "Bitget",
+    "huobi": "HTX",
+    "crypto_com": "Crypto.com",
+    "upbit": "Upbit",
+    "bithumb": "Bithumb",
+    "bitfinex": "Bitfinex",
+    "bitstamp": "Bitstamp",
+    "hitbtc": "HitBTC",
+    "lbank": "LBank",
+}
+
+
+def fetch_tickers(coin_id: str, pages: int = 2) -> list[dict]:
+    rows: list[dict] = []
+    for page in range(1, pages + 1):
+        try:
+            body = _get(f"/coins/{coin_id}/tickers", {"page": page, "depth": "false", "include_exchange_logo": "false"}, ttl=TICKERS_TTL)
+        except (HttpError, OfflineError) as exc:
+            log.warning("coingecko tickers %s page %d failed: %s", coin_id, page, exc)
+            break
+        batch = body.get("tickers") or []
+        rows.extend(batch)
+        if len(batch) < 100:
+            break
+    return rows
+
+
+def build_exchange_listing(raw: list[dict], base_symbol: str | None = None) -> "ExchangeListing":
+    """Turn CoinGecko tickers into the per-exchange listing summary.
+
+    Only spot tickers whose base is the token are kept (CoinGecko also lists pairs where
+    the token is the quote side). Stale and anomalous tickers stay in the list but are
+    marked, and do not count towards volume.
+    """
+    from varbot.models import ExchangeListing, ExchangeTicker
+
+    tickers: list[ExchangeTicker] = []
+    for t in raw:
+        market = t.get("market") or {}
+        base = (t.get("base") or "").upper()
+        target = (t.get("target") or "").upper()
+        # Contract addresses show up as base/target for DEX pairs; prefer the coin_id check.
+        if base_symbol and base != base_symbol.upper() and t.get("coin_id") and t.get("coin_id") != t.get("target_coin_id"):
+            # coin is the base by coin_id even if the symbol differs (e.g. address); keep
+            pass
+        elif base_symbol and base != base_symbol.upper():
+            continue
+        conv_last = (t.get("converted_last") or {}).get("usd")
+        conv_vol = (t.get("converted_volume") or {}).get("usd")
+        tickers.append(
+            ExchangeTicker(
+                exchange_id=market.get("identifier") or "",
+                exchange_name=market.get("name") or market.get("identifier") or "?",
+                base=base,
+                target=target,
+                pair=f"{base}/{target}",
+                last_usd=float(conv_last) if conv_last is not None else None,
+                volume_usd=float(conv_vol) if conv_vol is not None else None,
+                spread_pct=t.get("bid_ask_spread_percentage"),
+                trust_score=t.get("trust_score"),
+                is_stale=bool(t.get("is_stale")),
+                is_anomaly=bool(t.get("is_anomaly")),
+                trade_url=t.get("trade_url"),
+            )
+        )
+    listing = ExchangeListing(available=bool(raw), tickers=tickers)
+    if not raw:
+        listing.note = "no tickers returned"
+        return listing
+    vol_by_ex: dict[str, float] = {}
+    name_by_id: dict[str, str] = {}
+    for t in tickers:
+        name_by_id[t.exchange_id] = t.exchange_name
+        if not (t.is_stale or t.is_anomaly):
+            vol_by_ex[t.exchange_id] = vol_by_ex.get(t.exchange_id, 0.0) + (t.volume_usd or 0.0)
+        else:
+            vol_by_ex.setdefault(t.exchange_id, 0.0)
+    ordered = sorted(vol_by_ex, key=lambda k: -vol_by_ex[k])
+    listing.exchange_ids = ordered
+    listing.exchanges = [name_by_id[k] for k in ordered]
+    listing.major_cex = [MAJOR_CEX[k] for k in ordered if k in MAJOR_CEX]
+    total = sum(vol_by_ex.values())
+    listing.total_spot_volume_usd = total
+    listing.top_exchange_share_pct = (vol_by_ex[ordered[0]] / total * 100) if ordered and total else None
+    dex_ids = {t.exchange_id for t in tickers if (t.trade_url or "").startswith(("https://app.", "https://dexscreener", "https://raydium", "https://jup", "https://pancakeswap", "https://app.uniswap"))}
+    # CoinGecko marks DEX pairs with contract-address targets or known DEX identifiers.
+    for t in tickers:
+        if any(k in t.exchange_id for k in ("uniswap", "pancake", "raydium", "orca", "curve", "sushi", "jupiter", "aerodrome", "meteora", "balancer", "trader_joe", "camelot", "velodrome", "quickswap", "pumpswap", "_v2", "_v3", "_v4")):
+            dex_ids.add(t.exchange_id)
+    listing.dex_count = len([e for e in ordered if e in dex_ids])
+    listing.cex_count = len(ordered) - listing.dex_count
+    return listing
+
+
+def exchange_listing_for(coin_id: str | None, base_symbol: str | None) -> "ExchangeListing":
+    from varbot.models import ExchangeListing
+
+    if not coin_id:
+        return ExchangeListing(available=False, note="no CoinGecko id")
+    return build_exchange_listing(fetch_tickers(coin_id), base_symbol)
+
+
 def fundamentals_for(symbols: list[tuple[str, str | None]], *, with_detail: bool = False) -> dict[str, TokenFundamentals]:
     """symbols: list of (base_symbol, listing name). Returns {base_symbol: fundamentals}.
 

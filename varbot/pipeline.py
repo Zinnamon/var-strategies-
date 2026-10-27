@@ -11,7 +11,9 @@ from varbot.analysis.classify import classify
 from varbot.analysis.scoring import score_all
 from varbot.models import AssetClassification, Listing, TokenFundamentals, TokenReport
 from varbot.research.business import research_token
-from varbot.sources import binance, coingecko, telegram, variational, x_api
+from varbot.sources import binance, coingecko, telegram, variational, venues, x_api
+
+DEFAULT_VENUES = ["binance", "bybit_spot", "okex", "gdax", "kraken", "kucoin", "gate", "mxc", "bitget", "huobi", "crypto_com"]
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ def build_reports(
     with_social: bool = True,
     with_research: bool = False,
     with_binance: bool = True,
+    venue_ids: list[str] | None = None,
     limit: int | None = None,
     progress: Progress = lambda msg: None,
     workers: int = 4,
@@ -74,11 +77,19 @@ def build_reports(
         reports = reports[:limit]
     progress(f"{len(reports)} tokens selected for deep analysis")
 
+    venue_ids = DEFAULT_VENUES if venue_ids is None else venue_ids
+    quote_prices = {"BTC": binance.quote_price_usd("BTC"), "ETH": binance.quote_price_usd("ETH")} if venue_ids else {}
+
     def enrich(r: TokenReport) -> TokenReport:
         sym = r.classification.base_symbol
         coingecko.add_detail(r.fundamentals)  # links, community and dev data for kept tokens only
+        r.exchanges = coingecko.exchange_listing_for(r.fundamentals.coingecko_id, sym)
         if with_binance:
             r.binance = binance.binance_impact(sym, sizes_usd=sizes_usd, moves_pct=moves_pct)
+        if venue_ids and r.exchanges.available:
+            others = [v for v in venue_ids if v != "binance"]
+            r.venues = venues.all_venue_impacts(sym, r.exchanges.tickers, others, sizes_usd=sizes_usd, moves_pct=moves_pct,
+                                                quote_prices=quote_prices)
         if with_social:
             r.x = x_api.x_metrics(r.fundamentals.twitter_handle)
             r.telegram = telegram.telegram_metrics(r.fundamentals.telegram_channel)

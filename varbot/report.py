@@ -70,6 +70,46 @@ def _impact_table(r: TokenReport) -> list[str]:
     return lines
 
 
+def _exchanges_section(r: TokenReport) -> list[str]:
+    e = r.exchanges
+    if not e.available:
+        return [f"- Exchanges: {e.note or 'not checked'}"]
+    lines = [
+        f"- Listed on {len(e.exchange_ids)} exchanges ({e.cex_count} CEX, {e.dex_count} DEX), spot volume {usd(e.total_spot_volume_usd)}/24h"
+        + (f", top venue holds {e.top_exchange_share_pct:.0f}%" if e.top_exchange_share_pct is not None else ""),
+        f"- Major CEX: {', '.join(e.major_cex) if e.major_cex else 'none'}",
+    ]
+    rest = [x for x in e.exchanges if x not in e.major_cex][:12]
+    if rest:
+        lines.append(f"- Other venues: {', '.join(rest)}" + (" …" if len(e.exchanges) - len(e.major_cex) > 12 else ""))
+    bad = [t for t in e.tickers if t.trust_score == "red" or t.is_anomaly]
+    if bad:
+        lines.append(f"- {len(bad)} pair(s) flagged red / anomalous by CoinGecko")
+    return lines
+
+
+def _venues_table(r: TokenReport) -> list[str]:
+    rows = [v for v in r.venues if v.listed]
+    if not rows:
+        return []
+    lines = ["", "| Venue | Pair | Spread | Asks within 2% | $10k buy | $100k buy | $1m buy | $ to move 5% | Levels |", "|---|---|---|---|---|---|---|---|---|"]
+    for v in ([r.binance] if r.binance.listed else []) + rows:
+        def f(n):
+            x = next((x for x in v.fills if x.side == "buy" and x.notional_usd == n), None)
+            return ("n/a" if not x else pct(x.impact_pct_vs_best) + (" (exh.)" if x.exhausted else ""))
+        mv = next((m for m in v.move_costs if m.side == "buy" and m.move_pct == 5.0), None)
+        lines.append(
+            f"| {v.venue_name} | {v.symbol or ''} | {f'{v.spread_bps:.1f} bps' if v.spread_bps is not None else v.note or 'n/a'} | "
+            f"{usd(v.ask_depth_2pct_usd)} | {f(10_000)} | {f(100_000)} | {f(1_000_000)} | "
+            f"{usd(mv.notional_usd) + ('+' if mv.beyond_visible_book else '') if mv else 'n/a'} | {v.book_depth_levels}/{v.levels_cap or '?'} |"
+        )
+    unavailable = [v for v in r.venues if v.listed and not v.fills]
+    if unavailable:
+        lines.append("")
+        lines.append("Books not retrieved: " + ", ".join(f"{v.venue_name} ({v.note})" for v in unavailable))
+    return lines
+
+
 def _variational_table(r: TokenReport) -> list[str]:
     if not r.variational_impact:
         return []
@@ -109,8 +149,11 @@ def token_markdown(r: TokenReport) -> str:
     )
     if f.categories:
         out.append(f"- Categories: {', '.join(f.categories[:6])}" + (f" · chains: {', '.join(f.chains[:4])}" if f.chains else ""))
+    out += ["", "### Exchanges"]
+    out += _exchanges_section(r)
     out += ["", "### Price impact of a spot buy"]
     out += _impact_table(r)
+    out += _venues_table(r)
     out += _variational_table(r)
     out += ["", "### Social"]
     if x.available:
@@ -168,15 +211,16 @@ def token_markdown(r: TokenReport) -> str:
 
 def summary_table(reports: Iterable[TokenReport]) -> str:
     rows = [
-        "| # | Token | Mcap | FDV | Var. 24h vol | Binance | $100k buy impact | $ to move 5% | X followers | TG members | Overall |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| # | Token | Mcap | FDV | Var. 24h vol | Exchanges | Binance | $100k buy impact | $ to move 5% | X followers | TG members | Overall |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for i, r in enumerate(reports, 1):
-        f, b = r.fundamentals, r.binance
+        f, b, e = r.fundamentals, r.binance, r.exchanges
         buy = next((x for x in b.fills if x.side == "buy" and x.notional_usd == 100_000), None)
         mv = next((x for x in b.move_costs if x.side == "buy" and x.move_pct == 5.0), None)
+        ex = (", ".join(e.major_cex[:4]) + (f" +{len(e.exchange_ids) - min(len(e.major_cex), 4)}" if len(e.exchange_ids) > min(len(e.major_cex), 4) else "")) if e.available else "n/a"
         rows.append(
-            f"| {i} | {r.listing.symbol} | {usd(f.market_cap_usd)} | {usd(f.fdv_usd)} | {usd(r.listing.volume_24h)} | "
+            f"| {i} | {r.listing.symbol} | {usd(f.market_cap_usd)} | {usd(f.fdv_usd)} | {usd(r.listing.volume_24h)} | {ex or 'none'} | "
             f"{b.binance_symbol or 'no'} | {pct(buy.impact_pct_vs_best) if buy else 'n/a'}{' (exh.)' if buy and buy.exhausted else ''} | "
             f"{usd(mv.notional_usd) if mv else 'n/a'}{'+' if mv and mv.beyond_visible_book else ''} | "
             f"{num(r.x.followers) if r.x.available else num(f.twitter_followers)} | "
@@ -194,8 +238,9 @@ def full_markdown(reports: list[TokenReport], platform: dict | None = None, titl
             f"Variational platform: {platform.get('num_markets')} markets, 24h volume {usd(platform.get('total_volume_24h'))}, "
             f"open interest {usd(platform.get('open_interest'))}, TVL {usd(platform.get('tvl'))}."
         )
-    out += ["", "Impact figures sweep the visible Binance spot order book (up to 5000 levels per side) at the time of the scan. "
-            "They are a snapshot: real fills attract new quotes and cancellations, so treat them as the order of magnitude, not a quote.",
+    out += ["", "Impact figures sweep the public spot order book of each venue at the time of the scan (Binance up to 5000 levels; "
+            "other venues cap lower, see the Levels column). Real fills attract new quotes and cancellations, so treat them as the "
+            "order of magnitude, not a quote. For continuously updated figures run `varbot watch`.",
             "", summary_table(reports), ""]
     for r in reports:
         out.append(token_markdown(r))
@@ -212,8 +257,10 @@ def to_csv(reports: list[TokenReport]) -> str:
     w = csv.writer(buf)
     w.writerow([
         "ticker", "name", "coingecko_id", "market_cap_usd", "fdv_usd", "variational_volume_24h", "variational_oi_usd",
+        "exchange_count", "major_cex", "all_exchanges", "spot_volume_24h_usd", "top_exchange_share_pct",
         "binance_symbol", "binance_volume_24h_usd", "spread_bps", "ask_depth_2pct_usd",
         "buy_10k_impact_pct", "buy_100k_impact_pct", "buy_1m_impact_pct", "usd_to_move_1pct", "usd_to_move_5pct", "usd_to_move_10pct",
+        "other_venues_100k_impact_pct",
         "x_followers", "x_posts_30d", "x_engagement_pct", "tg_members", "tg_posts_30d",
         "business_activity_score", "liquidity_score", "social_score", "fundamentals_score", "overall_score", "flags",
     ])
@@ -227,11 +274,17 @@ def to_csv(reports: list[TokenReport]) -> str:
         return m.notional_usd if m else None
 
     for r in reports:
-        f, b = r.fundamentals, r.binance
+        f, b, e = r.fundamentals, r.binance, r.exchanges
+        others = "; ".join(
+            f"{v.venue_name}={x.impact_pct_vs_best:.2f}%"
+            for v in r.venues for x in v.fills if x.side == "buy" and x.notional_usd == 100_000 and x.impact_pct_vs_best is not None
+        )
         w.writerow([
             r.listing.ticker, f.name or r.listing.name, f.coingecko_id, f.market_cap_usd, f.fdv_usd, r.listing.volume_24h,
-            r.listing.open_interest_usd, b.binance_symbol, b.volume_24h_usd, b.spread_bps, b.ask_depth_2pct_usd,
-            fill(r, 10_000), fill(r, 100_000), fill(r, 1_000_000), move(r, 1.0), move(r, 5.0), move(r, 10.0),
+            r.listing.open_interest_usd,
+            len(e.exchange_ids) if e.available else None, "; ".join(e.major_cex), "; ".join(e.exchanges), e.total_spot_volume_usd, e.top_exchange_share_pct,
+            b.binance_symbol, b.volume_24h_usd, b.spread_bps, b.ask_depth_2pct_usd,
+            fill(r, 10_000), fill(r, 100_000), fill(r, 1_000_000), move(r, 1.0), move(r, 5.0), move(r, 10.0), others,
             r.x.followers if r.x.available else f.twitter_followers, r.x.posts_30d if r.x.available else None, r.x.engagement_rate_pct,
             r.telegram.members if r.telegram.available else f.telegram_users, r.telegram.posts_30d if r.telegram.available else None,
             r.research.activity_score, r.scores.liquidity, r.scores.social, r.scores.fundamentals, r.scores.overall,

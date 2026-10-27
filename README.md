@@ -7,9 +7,18 @@ For every crypto perp Variational quotes it pulls:
   interest, funding, and the OLP's own quotes at $1k / $100k / $1m notional.
 - **Fundamentals** from CoinGecko: market cap, FDV, volume, supply and float, ATH drawdown,
   categories, chains, official links, and the community and developer snapshots.
-- **Binance spot price impact**: sweeps the live order book (up to 5000 levels a side) and
-  reports, for each buy size, the average fill, where the price ends up, and how many dollars
-  it takes to push the price 1 / 2 / 5 / 10 / 20 %.
+- **Exchange listings**: every spot pair the token trades on (CEX and DEX) from CoinGecko's
+  tickers, with volume share, trust score and which of the major CEXs list it: Binance,
+  Bybit, OKX, Coinbase, Kraken, KuCoin, Gate, MEXC, Bitget, HTX, Crypto.com, Upbit and more.
+- **Spot price impact on every major venue**: sweeps the public order book of each major CEX
+  that lists the token (Binance 5000 levels, Gate 1000, Kraken 500, OKX 400, Bybit 200,
+  Bitget/HTX/Crypto.com 150, KuCoin 100, Coinbase 50) and reports, for each buy size, the
+  average fill, where the price ends up, and how many dollars it takes to push the price
+  1 / 2 / 5 / 10 / 20 %.
+- **Real time** (`varbot watch`): keeps live order books over WebSockets for Binance, Bybit
+  and OKX, recomputes the impact table every couple of seconds, serves it as JSON over HTTP,
+  rewrites a JSON file, and prints alerts when impact crosses a threshold. Variational's
+  own stats are re-polled every 30 s, the lifetime of its cache.
 - **X activity**: followers, posting cadence, likes / reposts / replies per post, engagement
   rate, days since the last post. Needs an X API bearer token.
 - **Telegram activity**: subscriber or member count, posts per 30 days, average views, days
@@ -46,12 +55,34 @@ varbot scan --out reports/           # small caps (<= $100M mcap): fundamentals 
 varbot scan --max-mcap 50m --limit 25 --research --out reports/
 varbot scan --symbols STO,ERA,SPX --sizes 10k,50k,100k,500k --moves 1,2,5,10
 
+varbot scan --venues binance,bybit,okx   # restrict the order-book venues (default: all supported)
 varbot token STO --research          # one token, full report to stdout
 varbot impact PEPE --sizes 100k,1m   # Binance book sweep only
+varbot impact PEPE --venue okx       # same on another venue
+
+varbot watch STO,ERA,SPX --serve 8080 --json-out live.json --alert-pct 3
+                                      # live WebSocket books; GET http://localhost:8080/ returns the latest JSON
 
 varbot notify reports/scan.md        # push to Telegram
 varbot --offline scan                # recorded fixtures, no network (used by the tests)
 ```
+
+### Real-time mode
+
+`varbot watch` subscribes to the diff-depth streams of Binance (snapshot plus deltas, with
+the sequence checks Binance documents), Bybit v5 (`orderbook.200`) and OKX (`books`, 400
+levels), keeps a local book per venue, and every `--interval` seconds recomputes the same
+impact table the scan produces. Output options:
+
+- the console table (`--quiet` to print alerts only),
+- `--json-out live.json`, rewritten atomically on each tick,
+- `--serve 8080`, a JSON endpoint you can poll from a dashboard or another bot,
+- `--alert-pct 3 --alert-size 100k`, prints when the $100k buy impact reaches 3 % and when it clears.
+
+Each venue row shows the age of the last update and a state: `live`, `stale` (no update
+for 30 s) or `sync` (reconnecting or re-syncing after a sequence gap). Books that go out
+of sequence are rebuilt automatically. Other venues (Coinbase, Kraken, KuCoin, Gate, MEXC,
+Bitget, HTX, Crypto.com) are REST-only and appear in `scan` and `impact`, not in `watch`.
 
 Reports land in `reports/scan.md`, `scan.json` and `scan.csv`. The CSV has one row per
 token with the impact numbers, social counts and scores, ready for a spreadsheet.
@@ -98,8 +129,10 @@ Run it on a cron and have it post to Telegram:
 | Source | Endpoint | Notes |
 |---|---|---|
 | Variational | `omni-client-api.prod.ap-northeast-1.variational.io/metadata/v2/stats` | documented at docs.variational.io/technical-documentation/api; one call returns every market |
-| CoinGecko | `/search`, `/coins/markets`, `/coins/{id}` | public tier ~30 req/min; the bot spaces calls and caches details for 24h |
-| Binance | `/api/v3/exchangeInfo`, `/depth?limit=5000`, `/ticker/24hr` | public, no key |
+| CoinGecko | `/coins/list`, `/search`, `/coins/markets`, `/coins/{id}`, `/coins/{id}/tickers` | public tier ~30 req/min; the bot spaces calls and caches details for 24h, tickers for 30 min |
+| Binance | `/api/v3/exchangeInfo`, `/depth?limit=5000`, `/ticker/24hr`; WS `<sym>@depth@100ms` | public, no key |
+| Bybit, OKX | REST order book; WS `orderbook.200`, `books` | public, no key |
+| Coinbase, Kraken, KuCoin, Gate, MEXC, Bitget, HTX, Crypto.com | REST order book | public, no key; level caps listed above |
 | X | `/2/users/by/username`, `/2/users/{id}/tweets` | bearer token; the free tier is very limited, Basic or above recommended |
 | Telegram | `t.me/s/<channel>`, `t.me/<name>` | public preview; groups expose member count only |
 | Claude | Messages API with `web_search` and `web_fetch` server tools | model set by `VARBOT_MODEL`, default `claude-opus-5-5` |
@@ -128,7 +161,8 @@ varbot/
   cli.py             commands: markets, scan, token, impact, notify
   pipeline.py        orchestration
   report.py          markdown / json / csv
-  sources/           variational, coingecko, binance, x_api, telegram
+  sources/           variational, coingecko, binance, venues (other CEX books), x_api, telegram
+  live/              book (local order book), feeds (Binance/Bybit/OKX WebSockets), runner (watch)
   analysis/          classify (crypto vs tradfi), impact (book maths), scoring
   research/          business.py (Claude web research)
 data/                asset classes and CoinGecko id overrides

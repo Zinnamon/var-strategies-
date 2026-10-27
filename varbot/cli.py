@@ -26,6 +26,22 @@ def _moves(text: str | None) -> tuple[float, ...]:
     return im.DEFAULT_MOVES_PCT if not text else tuple(float(x) for x in text.split(","))
 
 
+def _venues(text: str | None) -> list[str] | None:
+    from varbot.sources.venues import venue_by_name
+
+    if text is None:
+        return None  # pipeline default: every supported venue
+    if text.strip().lower() == "none":
+        return []
+    out = []
+    for name in text.split(","):
+        v = venue_by_name(name)
+        if not v:
+            raise click.BadParameter(f"unknown venue {name!r}")
+        out.append(v.id)
+    return out
+
+
 def _write(out_dir: Path | None, stem: str, md: str, reports) -> None:
     if not out_dir:
         click.echo(md)
@@ -88,10 +104,11 @@ def markets(show_all: bool, sort: str) -> None:
 @click.option("--research", is_flag=True, help="Run Claude web research on business activity (costs API usage).")
 @click.option("--limit", type=int, default=None, help="Only the N smallest caps.")
 @click.option("--symbols", default=None, help="Comma separated tickers to restrict to, e.g. STO,ERA,BONK")
+@click.option("--venues", default=None, help="Comma separated venues for order-book impact (default: all supported). 'none' for Binance only.")
 @click.option("--out", type=click.Path(path_type=Path), default=None, help="Directory for .md/.json/.csv (default: print markdown).")
 @click.option("--workers", type=int, default=4)
-def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, out, workers) -> None:
-    """Full pass: fundamentals, Binance impact, social, optional research, ranked report."""
+def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, venues, out, workers) -> None:
+    """Full pass: fundamentals, exchange listings, order-book impact on every venue, social, optional research."""
     platform, listings = variational.fetch_stats()
     listings = select_symbols(listings, symbols.split(",") if symbols else None)
     reports = build_reports(
@@ -102,6 +119,7 @@ def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, 
         moves_pct=_moves(moves),
         with_social=not no_social,
         with_research=research,
+        venue_ids=_venues(venues),
         limit=limit,
         progress=lambda m: click.echo(m, err=True),
         workers=workers,
@@ -117,8 +135,9 @@ def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, 
 @click.option("--moves", default=None)
 @click.option("--no-social", is_flag=True)
 @click.option("--research", is_flag=True)
+@click.option("--venues", default=None)
 @click.option("--out", type=click.Path(path_type=Path), default=None)
-def token(symbol, sizes, moves, no_social, research, out) -> None:
+def token(symbol, sizes, moves, no_social, research, venues, out) -> None:
     """Deep report on one listed token."""
     _, listings = variational.fetch_stats()
     chosen = select_symbols(listings, [symbol])
@@ -127,7 +146,8 @@ def token(symbol, sizes, moves, no_social, research, out) -> None:
         sys.exit(1)
     reports = build_reports(
         chosen, only_small_caps=False, sizes_usd=_sizes(sizes), moves_pct=_moves(moves),
-        with_social=not no_social, with_research=research, progress=lambda m: click.echo(m, err=True), workers=1,
+        with_social=not no_social, with_research=research, venue_ids=_venues(venues),
+        progress=lambda m: click.echo(m, err=True), workers=1,
     )
     md = "\n\n".join(token_markdown(r) for r in reports)
     _write(out, f"token-{symbol.upper()}", md, reports)
@@ -137,15 +157,24 @@ def token(symbol, sizes, moves, no_social, research, out) -> None:
 @click.argument("symbol")
 @click.option("--sizes", default=None)
 @click.option("--moves", default=None)
-def impact(symbol, sizes, moves) -> None:
-    """Binance spot order-book impact only (no Variational listing needed)."""
+@click.option("--venue", default="binance", help="binance, bybit, okx, coinbase, kraken, kucoin, gate, mexc, bitget, htx, cryptocom")
+@click.option("--quote", default="USDT")
+def impact(symbol, sizes, moves, venue, quote) -> None:
+    """Spot order-book impact on one venue (no Variational listing needed)."""
     from varbot.sources.binance import binance_impact
+    from varbot.sources.venues import venue_by_name, venue_impact
 
-    b = binance_impact(symbol.upper(), sizes_usd=_sizes(sizes), moves_pct=_moves(moves))
-    if not b.listed:
+    if venue.lower() == "binance":
+        b = binance_impact(symbol.upper(), sizes_usd=_sizes(sizes), moves_pct=_moves(moves))
+    else:
+        v = venue_by_name(venue)
+        if not v:
+            raise click.BadParameter(f"unknown venue {venue!r}")
+        b = venue_impact(v, symbol.upper(), quote.upper(), sizes_usd=_sizes(sizes), moves_pct=_moves(moves))
+    if not b.listed or not b.fills:
         click.echo(b.note)
         sys.exit(1)
-    click.echo(f"{b.binance_symbol}: bid {b.best_bid} ask {b.best_ask} spread {b.spread_bps:.1f} bps, 24h vol {usd(b.volume_24h_usd)}, asks within 2% {usd(b.ask_depth_2pct_usd)}")
+    click.echo(f"{b.venue_name} {b.symbol}: bid {b.best_bid} ask {b.best_ask} spread {b.spread_bps:.1f} bps, 24h vol {usd(b.volume_24h_usd)}, asks within 2% {usd(b.ask_depth_2pct_usd)}, {b.book_depth_levels} levels (cap {b.levels_cap})")
     for f in b.fills:
         click.echo(
             f"  {f.side:<4} {usd(f.notional_usd):>9}: avg {f.avg_price}, final {f.final_price}, "
@@ -153,6 +182,44 @@ def impact(symbol, sizes, moves) -> None:
         )
     for m in b.move_costs:
         click.echo(f"  move {m.side} {m.move_pct:>4.0f}%: {usd(m.notional_usd)}{' (beyond visible book)' if m.beyond_visible_book else ''}")
+
+
+@main.command()
+@click.argument("symbols")
+@click.option("--venues", default="binance,bybit,okx", show_default=True, help="Live-capable venues: binance, bybit, okx")
+@click.option("--sizes", default="10k,100k,1m", show_default=True)
+@click.option("--moves", default=None)
+@click.option("--interval", default=2.0, show_default=True, help="Seconds between recomputes.")
+@click.option("--json-out", type=click.Path(path_type=Path), default=None, help="Rewrite this file with the latest payload every tick.")
+@click.option("--serve", "port", type=int, default=None, help="Serve the latest payload as JSON on this port (GET /).")
+@click.option("--alert-pct", type=float, default=None, help="Print an alert when the --alert-size buy impact reaches this %.")
+@click.option("--alert-size", default="100k", show_default=True)
+@click.option("--duration", type=float, default=None, help="Stop after N seconds (default: run until Ctrl-C).")
+@click.option("--quiet", is_flag=True, help="Do not print the table each tick (alerts still print).")
+def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, alert_size, duration, quiet) -> None:
+    """Real-time order books over WebSockets: live impact table, JSON file and HTTP endpoint.
+
+    Example: varbot watch STO,ERA --serve 8080 --json-out live.json --alert-pct 3
+    """
+    import asyncio
+
+    from varbot.live.runner import watch as _watch
+
+    def tick(text: str) -> None:
+        if quiet and not text.startswith(("ALERT", "clear")):
+            return
+        click.echo(text + ("\n" if not text.startswith(("ALERT", "clear")) else ""))
+
+    try:
+        asyncio.run(_watch(
+            symbols.split(","), venue_ids=_venues(venues), sizes_usd=_sizes(sizes), moves_pct=_moves(moves), interval=interval,
+            json_out=json_out, port=port, alert_pct=alert_pct, alert_size=_sizes(alert_size)[0], duration=duration, on_tick=tick,
+        ))
+    except KeyboardInterrupt:
+        click.echo("stopped", err=True)
+    except RuntimeError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
 
 
 @main.command()

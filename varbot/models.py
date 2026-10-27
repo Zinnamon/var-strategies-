@@ -136,11 +136,44 @@ class MoveCost(BaseModel):
     beyond_visible_book: bool
 
 
-class BinanceImpact(BaseModel):
-    binance_symbol: Optional[str] = None
+class ExchangeTicker(BaseModel):
+    """One spot pair on one exchange, from CoinGecko's tickers."""
+
+    exchange_id: str  # CoinGecko identifier, e.g. binance, bybit, okex, gdax
+    exchange_name: str
+    base: str
+    target: str
+    pair: str
+    last_usd: Optional[float] = None
+    volume_usd: Optional[float] = None
+    spread_pct: Optional[float] = None
+    trust_score: Optional[str] = None  # green | yellow | red
+    is_stale: bool = False
+    is_anomaly: bool = False
+    trade_url: Optional[str] = None
+
+
+class ExchangeListing(BaseModel):
+    available: bool = False
+    note: str = ""
+    tickers: list[ExchangeTicker] = Field(default_factory=list)
+    exchanges: list[str] = Field(default_factory=list)  # names, by 24h volume desc
+    exchange_ids: list[str] = Field(default_factory=list)
+    major_cex: list[str] = Field(default_factory=list)  # which of the tracked majors list it
+    dex_count: int = 0
+    cex_count: int = 0
+    total_spot_volume_usd: Optional[float] = None
+    top_exchange_share_pct: Optional[float] = None
+
+
+class VenueImpact(BaseModel):
+    venue: str = "binance"
+    venue_name: str = "Binance"
+    binance_symbol: Optional[str] = None  # kept for backward compatibility; the venue's pair symbol
     quote_asset: Optional[str] = None
     listed: bool = False
     note: str = ""
+    levels_cap: Optional[int] = None  # how many levels the venue's public book returns at most
     best_bid: Optional[float] = None
     best_ask: Optional[float] = None
     spread_bps: Optional[float] = None
@@ -154,6 +187,13 @@ class BinanceImpact(BaseModel):
     fills: list[FillResult] = Field(default_factory=list)
     move_costs: list[MoveCost] = Field(default_factory=list)
     fetched_at: Optional[str] = None
+
+    @property
+    def symbol(self) -> Optional[str]:
+        return self.binance_symbol
+
+
+BinanceImpact = VenueImpact  # alias kept so earlier code and tests keep working
 
 
 class VariationalImpact(BaseModel):
@@ -248,7 +288,9 @@ class TokenReport(BaseModel):
     is_small_cap: bool = False
     small_cap_threshold_usd: Optional[float] = None
     variational_impact: list[VariationalImpact] = Field(default_factory=list)
-    binance: BinanceImpact = Field(default_factory=BinanceImpact)
+    exchanges: ExchangeListing = Field(default_factory=ExchangeListing)
+    binance: VenueImpact = Field(default_factory=VenueImpact)
+    venues: list[VenueImpact] = Field(default_factory=list)  # other CEX spot books, same maths
     x: XMetrics = Field(default_factory=XMetrics)
     telegram: TelegramMetrics = Field(default_factory=TelegramMetrics)
     research: BusinessResearch = Field(default_factory=BusinessResearch)
