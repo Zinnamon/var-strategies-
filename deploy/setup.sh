@@ -64,7 +64,13 @@ ufw allow OpenSSH >/dev/null
 ufw --force enable >/dev/null
 
 echo "== smoke test"
-sudo -u "$USER_NAME" "$APP_DIR/venv/bin/varbot" markets | head -5 || echo "   markets check failed; see the error above"
+if sudo -u "$USER_NAME" "$APP_DIR/venv/bin/varbot" markets > /tmp/varbot-markets.txt 2>&1; then
+  head -6 /tmp/varbot-markets.txt
+  echo "   ok: $(grep -c PERP /tmp/varbot-markets.txt) crypto perps listed (full list: varbot markets)"
+else
+  cat /tmp/varbot-markets.txt
+  echo "   markets check failed; see the error above"
+fi
 
 cat <<EOF
 
