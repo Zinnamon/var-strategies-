@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "varbot"
+version = "0.1.0"
+description = "Research bot for the tokens listed on Variational Omni: fundamentals, X/Telegram activity, business research and Binance spot price-impact."
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pydantic>=2.5",
+    "click>=8.1",
+    "beautifulsoup4>=4.12",
+    "python-dotenv>=1.0",
+    "anthropic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+varbot = "varbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["varbot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

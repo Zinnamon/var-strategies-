@@ -1,0 +1,170 @@
+"""Command line entry point: `varbot --help`."""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import click
+
+from varbot.analysis import impact as im
+from varbot.analysis.classify import classify
+from varbot.config import SETTINGS
+from varbot.pipeline import build_reports, select_symbols
+from varbot.report import full_markdown, to_csv, to_json, token_markdown, usd
+from varbot.sources import variational
+
+
+def _sizes(text: str | None) -> tuple[float, ...]:
+    if not text:
+        return im.DEFAULT_SIZES_USD
+    return tuple(float(x.replace("k", "e3").replace("m", "e6").replace("M", "e6").replace("K", "e3")) for x in text.split(","))
+
+
+def _moves(text: str | None) -> tuple[float, ...]:
+    return im.DEFAULT_MOVES_PCT if not text else tuple(float(x) for x in text.split(","))
+
+
+def _write(out_dir: Path | None, stem: str, md: str, reports) -> None:
+    if not out_dir:
+        click.echo(md)
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{stem}.md").write_text(md)
+    (out_dir / f"{stem}.json").write_text(to_json(reports))
+    (out_dir / f"{stem}.csv").write_text(to_csv(reports))
+    click.echo(f"wrote {out_dir / stem}.md, .json, .csv", err=True)
+
+
+@click.group()
+@click.option("--offline", is_flag=True, help="Never touch the network; use recorded fixtures and cache.")
+@click.option("-v", "--verbose", is_flag=True)
+def main(offline: bool, verbose: bool) -> None:
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    if offline:
+        SETTINGS.offline = True
+
+
+@main.command()
+@click.option("--all", "show_all", is_flag=True, help="Include equities, ETFs, commodities and swaps.")
+@click.option("--sort", type=click.Choice(["volume", "oi", "spread", "ticker"]), default="volume")
+def markets(show_all: bool, sort: str) -> None:
+    """List the markets Variational currently quotes."""
+    platform, listings = variational.fetch_stats()
+    rows = []
+    for l in listings:
+        c = classify(l)
+        if not show_all and c.asset_class != "crypto":
+            continue
+        rows.append((l, c))
+    key = {
+        "volume": lambda lc: -lc[0].volume_24h,
+        "oi": lambda lc: -lc[0].open_interest_usd,
+        "spread": lambda lc: -(lc[0].base_spread_bps or 0),
+        "ticker": lambda lc: lc[0].ticker,
+    }[sort]
+    rows.sort(key=key)
+    click.echo(
+        f"Variational: {platform.get('num_markets')} markets, 24h volume {usd(platform.get('total_volume_24h'))}, "
+        f"OI {usd(platform.get('open_interest'))}, TVL {usd(platform.get('tvl'))}\n"
+    )
+    click.echo(f"{'ticker':<18}{'class':<10}{'name':<34}{'mark':>14}{'24h vol':>12}{'OI':>12}{'spread':>9}{'$100k buy':>11}")
+    for l, c in rows:
+        q100k = next((q for q in l.quotes if q.tier == "size_100k"), None)
+        prem = f"{(q100k.ask - l.mark_price) / l.mark_price * 100:+.2f}%" if (q100k and l.mark_price) else "n/a"
+        click.echo(
+            f"{l.ticker:<18}{c.asset_class:<10}{(l.name or '')[:33]:<34}{l.mark_price:>14,.6g}{usd(l.volume_24h):>12}"
+            f"{usd(l.open_interest_usd):>12}{(l.base_spread_bps or 0):>8.1f}b{prem:>11}"
+        )
+
+
+@main.command()
+@click.option("--max-mcap", default=100e6, show_default=True, help="Small-cap threshold in USD (market cap, else FDV).")
+@click.option("--all-caps", is_flag=True, help="Analyse every crypto listing, not just small caps.")
+@click.option("--sizes", default=None, help="Buy sizes in USD, comma separated, e.g. 10k,50k,100k,1m")
+@click.option("--moves", default=None, help="Price moves in %, comma separated, e.g. 1,2,5,10")
+@click.option("--no-social", is_flag=True, help="Skip X and Telegram.")
+@click.option("--research", is_flag=True, help="Run Claude web research on business activity (costs API usage).")
+@click.option("--limit", type=int, default=None, help="Only the N smallest caps.")
+@click.option("--symbols", default=None, help="Comma separated tickers to restrict to, e.g. STO,ERA,BONK")
+@click.option("--out", type=click.Path(path_type=Path), default=None, help="Directory for .md/.json/.csv (default: print markdown).")
+@click.option("--workers", type=int, default=4)
+def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, out, workers) -> None:
+    """Full pass: fundamentals, Binance impact, social, optional research, ranked report."""
+    platform, listings = variational.fetch_stats()
+    listings = select_symbols(listings, symbols.split(",") if symbols else None)
+    reports = build_reports(
+        listings,
+        small_cap_max_usd=max_mcap,
+        only_small_caps=not all_caps,
+        sizes_usd=_sizes(sizes),
+        moves_pct=_moves(moves),
+        with_social=not no_social,
+        with_research=research,
+        limit=limit,
+        progress=lambda m: click.echo(m, err=True),
+        workers=workers,
+    )
+    reports.sort(key=lambda r: -(r.scores.overall or -1))
+    md = full_markdown(reports, platform, title=f"Variational token scan (caps <= {usd(max_mcap)})" if not all_caps else "Variational token scan")
+    _write(out, "scan", md, reports)
+
+
+@main.command()
+@click.argument("symbol")
+@click.option("--sizes", default=None)
+@click.option("--moves", default=None)
+@click.option("--no-social", is_flag=True)
+@click.option("--research", is_flag=True)
+@click.option("--out", type=click.Path(path_type=Path), default=None)
+def token(symbol, sizes, moves, no_social, research, out) -> None:
+    """Deep report on one listed token."""
+    _, listings = variational.fetch_stats()
+    chosen = select_symbols(listings, [symbol])
+    if not chosen:
+        click.echo(f"{symbol} is not listed on Variational", err=True)
+        sys.exit(1)
+    reports = build_reports(
+        chosen, only_small_caps=False, sizes_usd=_sizes(sizes), moves_pct=_moves(moves),
+        with_social=not no_social, with_research=research, progress=lambda m: click.echo(m, err=True), workers=1,
+    )
+    md = "\n\n".join(token_markdown(r) for r in reports)
+    _write(out, f"token-{symbol.upper()}", md, reports)
+
+
+@main.command()
+@click.argument("symbol")
+@click.option("--sizes", default=None)
+@click.option("--moves", default=None)
+def impact(symbol, sizes, moves) -> None:
+    """Binance spot order-book impact only (no Variational listing needed)."""
+    from varbot.sources.binance import binance_impact
+
+    b = binance_impact(symbol.upper(), sizes_usd=_sizes(sizes), moves_pct=_moves(moves))
+    if not b.listed:
+        click.echo(b.note)
+        sys.exit(1)
+    click.echo(f"{b.binance_symbol}: bid {b.best_bid} ask {b.best_ask} spread {b.spread_bps:.1f} bps, 24h vol {usd(b.volume_24h_usd)}, asks within 2% {usd(b.ask_depth_2pct_usd)}")
+    for f in b.fills:
+        click.echo(
+            f"  {f.side:<4} {usd(f.notional_usd):>9}: avg {f.avg_price}, final {f.final_price}, "
+            f"impact {f.impact_pct_vs_best:+.3f}% vs best, {f.impact_pct_vs_mid:+.3f}% vs mid{' (book exhausted)' if f.exhausted else ''}"
+        )
+    for m in b.move_costs:
+        click.echo(f"  move {m.side} {m.move_pct:>4.0f}%: {usd(m.notional_usd)}{' (beyond visible book)' if m.beyond_visible_book else ''}")
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
+@click.option("--chat-id", default=None)
+def notify(path: Path, chat_id) -> None:
+    """Send a report file to the configured Telegram chat."""
+    from varbot.notify import send_telegram
+
+    n = send_telegram(path.read_text(), chat_id=chat_id)
+    click.echo(f"sent {n} message(s)")
+
+
+if __name__ == "__main__":
+    main()

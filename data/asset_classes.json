@@ -1,0 +1,16 @@
+{
+  "commodity": ["XAU", "XAG", "XPD", "XPT", "CL", "BZ", "COPPER", "NATGAS", "UKOIL", "USOIL", "HOIL", "GASOL", "COCOA", "COPP"],
+  "pre_ipo": ["ANTHROPIC", "OPENAI", "SPACEX", "STRIPE", "DATABRICKS"],
+  "index": ["US30", "US100", "US400", "US2K", "CNA50", "TWI", "USFNG", "VXI"],
+  "fx": ["DXI", "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD"],
+  "etf": ["DRAM", "EWJ", "EWT", "EWY", "EWZ", "IWM", "KSTR", "QQQ", "SOXL", "SOXS", "SPCX", "TMF", "TZA", "URNM", "UVXY", "XBI", "XLE", "US500", "SPY", "GLD", "SLV", "TLT", "HYG", "ARKK"],
+  "equity": [
+    "AAOI", "AAPL", "ADBE", "ALAB", "AMAT", "AMD", "AMZN", "APP", "ARM", "ASML", "AVGO", "BABA", "BBX", "BE",
+    "BMNR", "BNC", "BOT", "BRKB", "BX", "CAT", "CBRS", "CIEN", "COIN", "COST", "CRCL", "CRDO", "CRM", "CRWD",
+    "CRWV", "CSCO", "DELL", "DIS", "DJT", "DKNG", "EBAY", "FLNC", "FWDI", "GLW", "GME", "GOOGL", "GPRO", "HD",
+    "HIMS", "HOOD", "HPE", "IBM", "INTC", "IREN", "JPM", "KLAC", "KO", "LITE", "LLY", "META", "MRNA", "MRVL",
+    "MSFT", "MSTR", "MU", "NBIS", "NFLX", "NOK", "NOW", "NVDA", "NVO", "ONDS", "ORCL", "PAYP", "PENG", "PLTR",
+    "QCOM", "QNTX", "RDDT", "RIVN", "RKLB", "SHAZ", "SHOP", "SKHY", "SMCI", "SNDK", "SNOW", "SOFI", "SONY",
+    "STRC", "STXX", "TER", "TSLA", "TSM", "TTWO", "TXN", "UBER", "USAR", "VISA", "WEN", "WMT", "ZM"
+  ]
+}

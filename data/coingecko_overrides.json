@@ -1,0 +1,19 @@
+{
+  "_comment": "Variational base symbol -> CoinGecko coin id, for names the automatic search gets wrong. Add entries as you find them.",
+  "BTC": "bitcoin",
+  "ETH": "ethereum",
+  "SOL": "solana",
+  "SPX": "spx6900",
+  "QNT": "quant-network",
+  "ZETA": "zetachain",
+  "DIA": "dia-data",
+  "BEAM": "beam-2",
+  "ERA": "caldera",
+  "STO": "stakestone",
+  "BONK": "bonk",
+  "PEPE": "pepe",
+  "SHIB": "shiba-inu",
+  "FLOKI": "floki",
+  "WIF": "dogwifcoin",
+  "DOGE": "dogecoin"
+}
