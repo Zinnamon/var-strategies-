@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Iterable
 
 from varbot.analysis import impact as im
+from varbot.analysis import pumps as pumps_mod
 from varbot.analysis.classify import classify
 from varbot.analysis.scoring import score_all
 from varbot.models import AssetClassification, Listing, TokenFundamentals, TokenReport
@@ -41,6 +42,10 @@ def build_reports(
     *,
     small_cap_max_usd: float = 100_000_000,
     only_small_caps: bool = False,
+    cap_basis: str = "either",  # fdv | mcap | either
+    with_pumps: bool = True,
+    pump_min_gain_pct: float = 50.0,
+    pump_window_days: int = 21,
     sizes_usd=im.DEFAULT_SIZES_USD,
     moves_pct=im.DEFAULT_MOVES_PCT,
     with_social: bool = True,
@@ -63,7 +68,12 @@ def build_reports(
         # The CoinGecko cross-check: a name that resolved to nothing is suspicious but
         # still treated as crypto (new listings lag CoinGecko by days).
         r = TokenReport(listing=l, classification=c, fundamentals=f, small_cap_threshold_usd=small_cap_max_usd)
-        cap = f.market_cap_usd or f.fdv_usd
+        if cap_basis == "fdv":
+            cap = f.fdv_usd or f.market_cap_usd
+        elif cap_basis == "mcap":
+            cap = f.market_cap_usd or f.fdv_usd
+        else:
+            cap = f.market_cap_usd or f.fdv_usd
         r.is_small_cap = bool(cap) and cap <= small_cap_max_usd
         if cap is None:
             r.is_small_cap = True  # unknown cap: treat as small so it gets the impact check
@@ -95,7 +105,10 @@ def build_reports(
             r.telegram = telegram.telegram_metrics(r.fundamentals.telegram_channel)
         if with_research:
             r.research = research_token(sym, r.fundamentals, r.listing.name)
-        r.scores = score_all(r.fundamentals, r.binance, r.x, r.telegram, r.research)
+        if with_pumps and r.fundamentals.coingecko_id:
+            chart = coingecko.fetch_market_chart(r.fundamentals.coingecko_id)
+            r.pumps = pumps_mod.analyse(chart, min_gain_pct=pump_min_gain_pct, window_days=pump_window_days) if chart else pumps_mod.PumpStats(note="price history unavailable")
+        r.scores = score_all(r.fundamentals, r.binance, r.x, r.telegram, r.research, r.exchanges, r.pumps)
         progress(f"done {r.listing.ticker}")
         return r
 

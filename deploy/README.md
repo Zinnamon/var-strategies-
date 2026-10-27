@@ -72,7 +72,13 @@ list if you want to see or edit it. Tokens with no spot pair on Binance, Bybit o
 reported once at start and then show Variational data only.
 
 `SCAN_EXTRA_ARGS` takes anything `varbot scan` accepts, for example
-`--research --limit 30` to add Claude research for the 30 smallest caps.
+`--cap-basis fdv --limit 60` or `--research --limit 30` to add Claude research for the 30
+smallest caps.
+
+CoinGecko budget: on the free Demo key (10,000 calls a month) each token costs about four
+calls per scan (details, tickers, price history, markets). A daily scan of 60 tokens fits;
+a daily scan of all ~300 sub-$100M listings does not. Run the full set once a week by
+hand, or move to CoinGecko's Analyst plan.
 
 ### Start
 

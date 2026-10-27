@@ -96,8 +96,13 @@ def markets(show_all: bool, sort: str) -> None:
 
 
 @main.command()
-@click.option("--max-mcap", default=100e6, show_default=True, help="Small-cap threshold in USD (market cap, else FDV).")
+@click.option("--max-mcap", default="100m", show_default=True, help="Small-cap threshold in USD, e.g. 100m or 50000000.")
+@click.option("--cap-basis", type=click.Choice(["either", "fdv", "mcap"]), default="either", show_default=True,
+              help="Compare the threshold against FDV, market cap, or market cap with FDV as fallback.")
 @click.option("--all-caps", is_flag=True, help="Analyse every crypto listing, not just small caps.")
+@click.option("--no-pumps", is_flag=True, help="Skip the 12-month price-history / pump analysis.")
+@click.option("--pump-gain", default=50.0, show_default=True, help="A run counts as a pump when it gains this % from the low of the window.")
+@click.option("--pump-window", default=21, show_default=True, help="Days in which the gain must happen.")
 @click.option("--sizes", default=None, help="Buy sizes in USD, comma separated, e.g. 10k,50k,100k,1m")
 @click.option("--moves", default=None, help="Price moves in %, comma separated, e.g. 1,2,5,10")
 @click.option("--no-social", is_flag=True, help="Skip X and Telegram.")
@@ -107,14 +112,19 @@ def markets(show_all: bool, sort: str) -> None:
 @click.option("--venues", default=None, help="Comma separated venues for order-book impact (default: all supported). 'none' for Binance only.")
 @click.option("--out", type=click.Path(path_type=Path), default=None, help="Directory for .md/.json/.csv (default: print markdown).")
 @click.option("--workers", type=int, default=4)
-def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, venues, out, workers) -> None:
-    """Full pass: fundamentals, exchange listings, order-book impact on every venue, social, optional research."""
+def scan(max_mcap, cap_basis, all_caps, no_pumps, pump_gain, pump_window, sizes, moves, no_social, research, limit, symbols, venues, out, workers) -> None:
+    """Full pass: fundamentals, exchange listings, order-book impact on every venue, social, price history, optional research."""
     platform, listings = variational.fetch_stats()
     listings = select_symbols(listings, symbols.split(",") if symbols else None)
+    max_mcap = _sizes(str(max_mcap))[0]
     reports = build_reports(
         listings,
         small_cap_max_usd=max_mcap,
         only_small_caps=not all_caps,
+        cap_basis=cap_basis,
+        with_pumps=not no_pumps,
+        pump_min_gain_pct=pump_gain,
+        pump_window_days=pump_window,
         sizes_usd=_sizes(sizes),
         moves_pct=_moves(moves),
         with_social=not no_social,
@@ -125,7 +135,8 @@ def scan(max_mcap, all_caps, sizes, moves, no_social, research, limit, symbols, 
         workers=workers,
     )
     reports.sort(key=lambda r: -(r.scores.overall or -1))
-    md = full_markdown(reports, platform, title=f"Variational token scan (caps <= {usd(max_mcap)})" if not all_caps else "Variational token scan")
+    basis = {"fdv": "FDV", "mcap": "market cap", "either": "cap"}[cap_basis]
+    md = full_markdown(reports, platform, title=f"Variational token scan ({basis} <= {usd(max_mcap)})" if not all_caps else "Variational token scan")
     _write(out, "scan", md, reports)
 
 

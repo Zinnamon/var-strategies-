@@ -149,6 +149,18 @@ def fetch_detail(coin_id: str) -> dict | None:
         return None
 
 
+CHART_TTL = 12 * 3600
+
+
+def fetch_market_chart(coin_id: str, days: int = 365) -> dict | None:
+    """Daily prices and volumes for the last `days` (CoinGecko picks daily granularity above 90 days)."""
+    try:
+        return _get(f"/coins/{coin_id}/market_chart", {"vs_currency": "usd", "days": days}, ttl=CHART_TTL)
+    except (HttpError, OfflineError) as exc:
+        log.warning("coingecko market_chart %s failed: %s", coin_id, exc)
+        return None
+
+
 def _first(items) -> str | None:
     for x in items or []:
         if x:

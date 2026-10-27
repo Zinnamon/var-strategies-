@@ -23,6 +23,10 @@ For every crypto perp Variational quotes it pulls:
   rate, days since the last post. Needs an X API bearer token.
 - **Telegram activity**: subscriber or member count, posts per 30 days, average views, days
   since the last post. No credentials needed (public web preview).
+- **Price history**: twelve months of daily prices per token. Counts the runs of 50 %+ within
+  three weeks (tunable), their size, speed and give-back, where the price sits against the
+  last peak and the 12-month range, volatility, and whether volume is picking up. The
+  report's highlights list the repeat pumpers and the most active small caps.
 - **Business activity** (optional, `--research`): Claude searches the web and fetches primary
   sources to list what the project shipped, announced, raised, listed or broke in the last 90
   days, with URLs, red flags and a 0-10 activity score.
@@ -52,7 +56,9 @@ varbot markets                       # every crypto perp Variational quotes, wit
 varbot markets --all                 # include equities, ETFs, commodities, swaps
 
 varbot scan --out reports/           # small caps (<= $100M mcap): fundamentals + Binance impact + socials
+varbot scan --cap-basis fdv --max-mcap 100m --out reports/   # everything under $100M FDV
 varbot scan --max-mcap 50m --limit 25 --research --out reports/
+varbot scan --pump-gain 80 --pump-window 14   # stricter definition of a pump
 varbot scan --symbols STO,ERA,SPX --sizes 10k,50k,100k,500k --moves 1,2,5,10
 
 varbot scan --venues binance,bybit,okx   # restrict the order-book venues (default: all supported)

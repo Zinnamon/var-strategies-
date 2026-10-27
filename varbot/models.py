@@ -271,11 +271,53 @@ class BusinessResearch(BaseModel):
     model: Optional[str] = None
 
 
+class PumpEpisode(BaseModel):
+    trough_date: str
+    trough_price: float
+    peak_date: str
+    peak_price: float
+    gain_pct: float
+    days_to_peak: int
+    retrace_pct: float  # how much of the peak was given back by the episode's end
+    end_date: str
+
+
+class PumpStats(BaseModel):
+    available: bool = False
+    note: str = ""
+    episodes: list[PumpEpisode] = Field(default_factory=list)
+    pumps_12m: int = 0
+    pumps_ytd: int = 0
+    max_gain_pct: Optional[float] = None
+    median_gain_pct: Optional[float] = None
+    median_retrace_pct: Optional[float] = None
+    avg_days_to_peak: Optional[float] = None
+    last_peak_date: Optional[str] = None
+    days_since_last_peak: Optional[int] = None
+    current_vs_last_peak_pct: Optional[float] = None
+    price_now: Optional[float] = None
+    high_12m: Optional[float] = None
+    low_12m: Optional[float] = None
+    low_90d: Optional[float] = None
+    current_vs_high_12m_pct: Optional[float] = None
+    current_vs_low_12m_pct: Optional[float] = None
+    current_vs_low_90d_pct: Optional[float] = None
+    change_90d_pct: Optional[float] = None
+    change_ytd_pct: Optional[float] = None
+    annualised_vol_pct: Optional[float] = None
+    days_over_20pct: Optional[int] = None
+    volume_30d_vs_180d: Optional[float] = None
+    volume_median_usd: Optional[float] = None
+    propensity: Optional[float] = None  # 0-10, see analysis.pumps.propensity
+
+
 class Scores(BaseModel):
     liquidity: Optional[float] = None  # 0-10
     social: Optional[float] = None
     fundamentals: Optional[float] = None
     business: Optional[float] = None
+    activity: Optional[float] = None  # signs of life: socials posting, commits, listings, volume
+    pump_propensity: Optional[float] = None
     overall: Optional[float] = None
     flags: list[str] = Field(default_factory=list)
 
@@ -294,4 +336,5 @@ class TokenReport(BaseModel):
     x: XMetrics = Field(default_factory=XMetrics)
     telegram: TelegramMetrics = Field(default_factory=TelegramMetrics)
     research: BusinessResearch = Field(default_factory=BusinessResearch)
+    pumps: PumpStats = Field(default_factory=PumpStats)
     scores: Scores = Field(default_factory=Scores)

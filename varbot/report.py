@@ -120,13 +120,34 @@ def _variational_table(r: TokenReport) -> list[str]:
     return lines
 
 
+def _pumps_section(r: TokenReport) -> list[str]:
+    p = r.pumps
+    if not p.available:
+        return [f"- {p.note or 'not run'}"]
+    lines = [
+        f"- 12 months: {p.pumps_12m} run(s) of 50%+ ({p.pumps_ytd} this year), best {pct(p.max_gain_pct, 0)}, "
+        f"median {pct(p.median_gain_pct, 0)} over ~{p.avg_days_to_peak:.0f} days, median give-back {pct(-(p.median_retrace_pct or 0), 0)}"
+        if p.pumps_12m else "- 12 months: no run of 50%+ within 3 weeks",
+        f"- Now {pct(p.current_vs_high_12m_pct, 0)} from 12m high, {pct(p.current_vs_low_12m_pct, 0)} above 12m low, "
+        f"{pct(p.current_vs_low_90d_pct, 0)} above 90d low; YTD {pct(p.change_ytd_pct, 0)}, 90d {pct(p.change_90d_pct, 0)}",
+        f"- Volatility {p.annualised_vol_pct:.0f}% annualised, {p.days_over_20pct} days with a 20%+ move; "
+        f"30d volume {p.volume_30d_vs_180d:.1f}x its 6-month median" if p.annualised_vol_pct is not None and p.volume_30d_vs_180d is not None
+        else "- Volatility n/a",
+        f"- Pump propensity {score(p.propensity)}/10"
+        + (f" · last peak {p.last_peak_date} ({p.days_since_last_peak}d ago), now {pct(p.current_vs_last_peak_pct, 0)} vs that peak" if p.last_peak_date else ""),
+    ]
+    for e in sorted(p.episodes, key=lambda e: e.peak_date, reverse=True)[:6]:
+        lines.append(f"  - {e.trough_date} → {e.peak_date}: {pct(e.gain_pct, 0)} in {e.days_to_peak}d, then gave back {e.retrace_pct:.0f}% by {e.end_date}")
+    return lines
+
+
 def token_markdown(r: TokenReport) -> str:
     l, f, x, tg, rs, s = r.listing, r.fundamentals, r.x, r.telegram, r.research, r.scores
     name = f.name or l.name or l.symbol
     out = [f"## {name} ({l.ticker})", ""]
     out.append(
-        f"**Overall {score(s.overall)}/10** · liquidity {score(s.liquidity)} · social {score(s.social)} · "
-        f"fundamentals {score(s.fundamentals)} · business {score(s.business)}"
+        f"**Overall {score(s.overall)}/10** · activity {score(s.activity)} · liquidity {score(s.liquidity)} · social {score(s.social)} · "
+        f"fundamentals {score(s.fundamentals)} · business {score(s.business)} · pump propensity {score(s.pump_propensity)}"
     )
     if s.flags:
         out.append("")
@@ -155,6 +176,8 @@ def token_markdown(r: TokenReport) -> str:
     out += _impact_table(r)
     out += _venues_table(r)
     out += _variational_table(r)
+    out += ["", "### Price history (12 months)"]
+    out += _pumps_section(r)
     out += ["", "### Social"]
     if x.available:
         out.append(
@@ -211,8 +234,8 @@ def token_markdown(r: TokenReport) -> str:
 
 def summary_table(reports: Iterable[TokenReport]) -> str:
     rows = [
-        "| # | Token | Mcap | FDV | Var. 24h vol | Exchanges | Binance | $100k buy impact | $ to move 5% | X followers | TG members | Overall |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| # | Token | Mcap | FDV | Var. 24h vol | Exchanges | Binance | $100k buy impact | $ to move 5% | X followers | TG members | Pumps 12m (best) | Activity | Overall |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for i, r in enumerate(reports, 1):
         f, b, e = r.fundamentals, r.binance, r.exchanges
@@ -224,9 +247,44 @@ def summary_table(reports: Iterable[TokenReport]) -> str:
             f"{b.binance_symbol or 'no'} | {pct(buy.impact_pct_vs_best) if buy else 'n/a'}{' (exh.)' if buy and buy.exhausted else ''} | "
             f"{usd(mv.notional_usd) if mv else 'n/a'}{'+' if mv and mv.beyond_visible_book else ''} | "
             f"{num(r.x.followers) if r.x.available else num(f.twitter_followers)} | "
-            f"{num(r.telegram.members) if r.telegram.available else num(f.telegram_users)} | {score(r.scores.overall)} |"
+            f"{num(r.telegram.members) if r.telegram.available else num(f.telegram_users)} | "
+            f"{(str(r.pumps.pumps_12m) + (' (' + pct(r.pumps.max_gain_pct, 0) + ')' if r.pumps.max_gain_pct else '')) if r.pumps.available else 'n/a'} | "
+            f"{score(r.scores.activity)} | {score(r.scores.overall)} |"
         )
     return "\n".join(rows)
+
+
+def highlights(reports: list[TokenReport]) -> str:
+    """Two ranked shortlists: the small caps that look alive, and the repeat pumpers."""
+    out: list[str] = []
+    alive = sorted([r for r in reports if r.scores.activity is not None], key=lambda r: -(r.scores.activity or 0))[:15]
+    if alive:
+        out += ["### Most active (signs of life: posts, commits, listings, volume, research)", "",
+                "| Token | Activity | FDV | Posts 30d (X / TG) | Commits 4w | CEXs | Spot vol 24h | Business | Notes |", "|---|---|---|---|---|---|---|---|---|"]
+        for r in alive:
+            f, e = r.fundamentals, r.exchanges
+            xp = str(r.x.posts_30d) if r.x.available else "-"
+            tp = str(r.telegram.posts_30d) if r.telegram.available else "-"
+            note = (r.research.summary or "")[:90] if r.research.available else "; ".join(r.scores.flags[:2])[:90]
+            out.append(f"| {r.listing.symbol} | {score(r.scores.activity)} | {usd(f.fdv_usd)} | {xp} / {tp} | {f.commits_4w if f.commits_4w is not None else '-'} | "
+                       f"{e.cex_count if e.available else '-'} | {usd(e.total_spot_volume_usd) if e.available else 'n/a'} | {score(r.scores.business)} | {note} |")
+        out.append("")
+    pumpers = sorted([r for r in reports if r.pumps.available and r.pumps.pumps_12m >= 2],
+                     key=lambda r: (-(r.pumps.propensity or 0), -r.pumps.pumps_12m))[:15]
+    if pumpers:
+        out += ["### Repeat pumpers (2+ runs of 50%+ within 3 weeks in the last 12 months)", "",
+                "| Token | Runs 12m / YTD | Best | Median | Last peak | Now vs last peak | Now vs 12m low | Vol 30d/180d | Propensity | Activity |", "|---|---|---|---|---|---|---|---|---|---|"]
+        for r in pumpers:
+            p = r.pumps
+            out.append(f"| {r.listing.symbol} | {p.pumps_12m} / {p.pumps_ytd} | {pct(p.max_gain_pct, 0)} | {pct(p.median_gain_pct, 0)} | {p.last_peak_date} ({p.days_since_last_peak}d) | "
+                       f"{pct(p.current_vs_last_peak_pct, 0)} | {pct(p.current_vs_low_12m_pct, 0)} | {p.volume_30d_vs_180d:.1f}x | {score(p.propensity)} | {score(r.scores.activity)} |"
+                       if p.volume_30d_vs_180d is not None else
+                       f"| {r.listing.symbol} | {p.pumps_12m} / {p.pumps_ytd} | {pct(p.max_gain_pct, 0)} | {pct(p.median_gain_pct, 0)} | {p.last_peak_date} ({p.days_since_last_peak}d) | "
+                       f"{pct(p.current_vs_last_peak_pct, 0)} | {pct(p.current_vs_low_12m_pct, 0)} | n/a | {score(p.propensity)} | {score(r.scores.activity)} |")
+        out.append("")
+        out.append("Propensity is a transparent 0-10 from run count, recency, distance below the last peak and volume pick-up. It describes the past pattern, not a forecast.")
+        out.append("")
+    return "\n".join(out)
 
 
 def full_markdown(reports: list[TokenReport], platform: dict | None = None, title: str = "Variational token scan") -> str:
@@ -241,7 +299,7 @@ def full_markdown(reports: list[TokenReport], platform: dict | None = None, titl
     out += ["", "Impact figures sweep the public spot order book of each venue at the time of the scan (Binance up to 5000 levels; "
             "other venues cap lower, see the Levels column). Real fills attract new quotes and cancellations, so treat them as the "
             "order of magnitude, not a quote. For continuously updated figures run `varbot watch`.",
-            "", summary_table(reports), ""]
+            "", highlights(reports), summary_table(reports), ""]
     for r in reports:
         out.append(token_markdown(r))
         out.append("")
@@ -262,7 +320,9 @@ def to_csv(reports: list[TokenReport]) -> str:
         "buy_10k_impact_pct", "buy_100k_impact_pct", "buy_1m_impact_pct", "usd_to_move_1pct", "usd_to_move_5pct", "usd_to_move_10pct",
         "other_venues_100k_impact_pct",
         "x_followers", "x_posts_30d", "x_engagement_pct", "tg_members", "tg_posts_30d",
-        "business_activity_score", "liquidity_score", "social_score", "fundamentals_score", "overall_score", "flags",
+        "pumps_12m", "pumps_ytd", "pump_max_gain_pct", "pump_median_gain_pct", "last_peak_date", "now_vs_last_peak_pct",
+        "now_vs_12m_high_pct", "now_vs_12m_low_pct", "change_ytd_pct", "annualised_vol_pct", "volume_30d_vs_180d", "pump_propensity",
+        "business_activity_score", "activity_score", "liquidity_score", "social_score", "fundamentals_score", "overall_score", "flags",
     ])
 
     def fill(r: TokenReport, n: float):
@@ -274,7 +334,7 @@ def to_csv(reports: list[TokenReport]) -> str:
         return m.notional_usd if m else None
 
     for r in reports:
-        f, b, e = r.fundamentals, r.binance, r.exchanges
+        f, b, e, p = r.fundamentals, r.binance, r.exchanges, r.pumps
         others = "; ".join(
             f"{v.venue_name}={x.impact_pct_vs_best:.2f}%"
             for v in r.venues for x in v.fills if x.side == "buy" and x.notional_usd == 100_000 and x.impact_pct_vs_best is not None
@@ -287,7 +347,9 @@ def to_csv(reports: list[TokenReport]) -> str:
             fill(r, 10_000), fill(r, 100_000), fill(r, 1_000_000), move(r, 1.0), move(r, 5.0), move(r, 10.0), others,
             r.x.followers if r.x.available else f.twitter_followers, r.x.posts_30d if r.x.available else None, r.x.engagement_rate_pct,
             r.telegram.members if r.telegram.available else f.telegram_users, r.telegram.posts_30d if r.telegram.available else None,
-            r.research.activity_score, r.scores.liquidity, r.scores.social, r.scores.fundamentals, r.scores.overall,
+            p.pumps_12m if p.available else None, p.pumps_ytd if p.available else None, p.max_gain_pct, p.median_gain_pct, p.last_peak_date, p.current_vs_last_peak_pct,
+            p.current_vs_high_12m_pct, p.current_vs_low_12m_pct, p.change_ytd_pct, p.annualised_vol_pct, p.volume_30d_vs_180d, p.propensity,
+            r.research.activity_score, r.scores.activity, r.scores.liquidity, r.scores.social, r.scores.fundamentals, r.scores.overall,
             "; ".join(r.scores.flags),
         ])
     return buf.getvalue()
