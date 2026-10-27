@@ -59,12 +59,17 @@ nano /opt/varbot/app/.env
 Fill in the keys you have and the watch settings:
 
 ```
-WATCH_SYMBOLS=STO,ERA,SPX
+WATCH_SYMBOLS=smallest:50        # or an explicit list such as STO,ERA,SPX
 ALERT_PCT=3
 ALERT_SIZE=100k
 SCAN_MAX_MCAP=100m
 SCAN_EXTRA_ARGS=
 ```
+
+`WATCH_SYMBOLS=smallest:50` resolves the 50 smallest-cap crypto listings when the watch
+service starts (restart the service to re-resolve). `varbot smallest 50` prints the same
+list if you want to see or edit it. Tokens with no spot pair on Binance, Bybit or OKX are
+reported once at start and then show Variational data only.
 
 `SCAN_EXTRA_ARGS` takes anything `varbot scan` accepts, for example
 `--research --limit 30` to add Claude research for the 30 smallest caps.

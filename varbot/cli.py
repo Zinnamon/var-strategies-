@@ -200,6 +200,8 @@ def impact(symbol, sizes, moves, venue, quote) -> None:
 def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, alert_size, duration, quiet, alert_telegram) -> None:
     """Real-time order books over WebSockets: live impact table, JSON file and HTTP endpoint.
 
+    SYMBOLS is comma separated. `smallest:50` expands to the 50 smallest caps at start.
+
     Example: varbot watch STO,ERA --serve 8080 --json-out live.json --alert-pct 3
     """
     import asyncio
@@ -232,6 +234,15 @@ def watch(symbols, venues, sizes, moves, interval, json_out, port, alert_pct, al
     except RuntimeError as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
+
+
+@main.command()
+@click.argument("n", type=int, default=50)
+def smallest(n: int) -> None:
+    """Print the N smallest-cap crypto listings as a comma-separated list (for WATCH_SYMBOLS)."""
+    from varbot.live.runner import smallest_symbols
+
+    click.echo(",".join(smallest_symbols(n)))
 
 
 @main.command()

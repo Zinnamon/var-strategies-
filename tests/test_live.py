@@ -88,6 +88,30 @@ def test_payload_table_and_alerts():
     assert alerts_for(payload, 5.0, 100_000, seen) == []  # no repeat while above threshold
 
 
+def test_smallest_and_expand(monkeypatch):
+    from varbot.live import runner
+    from varbot.models import Listing, TokenFundamentals
+
+    listings = [
+        Listing(ticker="BIG-PERP", name="Big", mark_price=1, volume_24h=1, contract_type="perpetual"),
+        Listing(ticker="TINY-PERP", name="Tiny", mark_price=1, volume_24h=1, contract_type="perpetual"),
+        Listing(ticker="MID-PERP", name="Mid", mark_price=1, volume_24h=1, contract_type="perpetual"),
+        Listing(ticker="AAPL-PERP", name="Apple Inc.", mark_price=1, volume_24h=1, contract_type="perpetual"),
+        Listing(ticker="NOCAP-PERP", name="Nocap", mark_price=1, volume_24h=1, contract_type="perpetual"),
+    ]
+    caps = {"BIG": 5e9, "TINY": 2e6, "MID": 4e7}
+    monkeypatch.setattr(runner.coingecko, "fundamentals_for", lambda syms, with_detail=False: {
+        s: TokenFundamentals(market_cap_usd=caps.get(s)) for s, _ in syms
+    })
+    assert runner.smallest_symbols(2, listings) == ["TINY", "MID"]
+    monkeypatch.setattr(runner, "smallest_symbols", lambda n, listings=None: ["TINY", "MID"][:n])
+    assert runner.expand_symbols(["STO", "smallest:2", "TINY"]) == ["STO", "TINY", "MID"]
+
+
+def test_bybit_topic_routing():
+    assert feeds.bybit_topic_symbol("orderbook.200.STOUSDT") == "STOUSDT"
+
+
 def test_run_binance_reconnect_loop_stops(monkeypatch):
     """The feed loop must exit when the stop event is set, even if connecting fails."""
     import types
@@ -114,7 +138,7 @@ def test_run_binance_reconnect_loop_stops(monkeypatch):
         async def snap(sym):
             return {}
 
-        task = asyncio.create_task(feeds.run_binance(book, snap, stop))
+        task = asyncio.create_task(feeds.run_binance([book], snap, stop))
         await asyncio.sleep(0.01)
         stop.set()
         await asyncio.wait_for(task, 1)

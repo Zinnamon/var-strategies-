@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Callable
 
 from varbot.analysis import impact as im
+from varbot.analysis.classify import classify
 from varbot.live.book import LocalBook
-from varbot.live.feeds import RUNNERS
+from varbot.live.feeds import BINANCE_STREAMS_PER_CONNECTION, RUNNERS
 from varbot.models import ExchangeTicker, Listing
 from varbot.report import pct, usd
 from varbot.sources import binance, coingecko, variational
@@ -26,6 +27,40 @@ from varbot.sources.venues import VENUES, pick_pair
 log = logging.getLogger(__name__)
 
 LIVE_VENUES = ["binance", "bybit_spot", "okex"]
+
+
+def smallest_symbols(n: int, listings: list[Listing] | None = None) -> list[str]:
+    """The n crypto listings with the smallest market cap (FDV when cap is unknown).
+
+    Tokens CoinGecko cannot value are left out, since "unknown" is not "small".
+    """
+    if listings is None:
+        _, listings = variational.fetch_stats()
+    pairs = [(l, classify(l)) for l in listings]
+    pairs = [(l, c) for l, c in pairs if c.asset_class == "crypto"]
+    funds = coingecko.fundamentals_for([(c.base_symbol, l.name) for l, c in pairs], with_detail=False)
+    valued = []
+    for l, c in pairs:
+        f = funds.get(c.base_symbol)
+        cap = (f.market_cap_usd or f.fdv_usd) if f else None
+        if cap:
+            valued.append((cap, l.symbol))
+    valued.sort()
+    return [sym for _, sym in valued[:n]]
+
+
+def expand_symbols(symbols: list[str]) -> list[str]:
+    """Resolve shorthands such as `smallest:50` into a concrete symbol list."""
+    out: list[str] = []
+    for s in symbols:
+        s = s.strip()
+        if not s:
+            continue
+        if s.lower().startswith("smallest:"):
+            out.extend(smallest_symbols(int(s.split(":", 1)[1])))
+        else:
+            out.append(s)
+    return list(dict.fromkeys(out))
 
 
 @dataclass
@@ -52,18 +87,19 @@ def resolve_targets(symbols: list[str], venue_ids: list[str], *, offline: bool =
     by_sym = {l.symbol.upper(): l for l in listings}
     quote_prices = {"BTC": binance.quote_price_usd("BTC"), "ETH": binance.quote_price_usd("ETH")}
     targets: list[WatchTarget] = []
-    for raw in symbols:
+    for raw in expand_symbols(symbols):
         sym = raw.upper().replace("-PERP", "")
         t = WatchTarget(symbol=sym, listing=by_sym.get(sym))
         name = t.listing.name if t.listing else None
-        t.coingecko_id, _ = coingecko.resolve_id(sym, name)
+        base = classify(t.listing).base_symbol if t.listing else sym  # 1000BONK -> BONK
+        t.coingecko_id, _ = coingecko.resolve_id(base, name)
         if t.coingecko_id:
-            t.tickers = coingecko.exchange_listing_for(t.coingecko_id, sym).tickers
+            t.tickers = coingecko.exchange_listing_for(t.coingecko_id, base).tickers
         for vid in venue_ids:
             venue = VENUES[vid]
             pair = None
             if vid == "binance":
-                bsym, quote = binance.resolve_symbol(sym)
+                bsym, quote = binance.resolve_symbol(base)
                 if bsym:
                     pair = (sym, quote, 1.0 if quote in binance.STABLE_QUOTES else quote_prices.get(quote, 0.0))
             if pair is None and t.tickers:
@@ -75,6 +111,8 @@ def resolve_targets(symbols: list[str], venue_ids: list[str], *, offline: bool =
                 continue
             b, q, qusd = pair
             t.books.append(LocalBook(venue=venue, symbol=venue.pair(b, q), quote=q, quote_usd=qusd))
+        if not t.books:
+            log.warning("%s: no spot pair on %s; it will show Variational data only", sym, ", ".join(VENUES[v].name for v in venue_ids))
         targets.append(t)
     return targets
 
@@ -215,14 +253,23 @@ async def watch(
     state = WatchState(targets=targets, sizes_usd=tuple(sizes_usd), moves_pct=tuple(moves_pct))
     if not any(t.books for t in targets):
         raise RuntimeError("none of the requested tokens has a live-capable spot pair on " + ", ".join(VENUES[v].name for v in venue_ids))
+    skipped = [t.symbol for t in targets if not t.books]
+    if skipped:
+        on_tick(f"no live spot book for: {', '.join(skipped)} (Variational data only)")
     stop = asyncio.Event()
     tasks = []
+    by_venue: dict[str, list[LocalBook]] = {}
     for t in targets:
         for book in t.books:
-            if book.venue.id == "binance":
-                tasks.append(asyncio.create_task(RUNNERS["binance"](book, _binance_snapshot, stop)))
-            else:
-                tasks.append(asyncio.create_task(RUNNERS[book.venue.id](book, stop)))
+            by_venue.setdefault(book.venue.id, []).append(book)
+    for vid, books in by_venue.items():
+        if vid == "binance":
+            for i in range(0, len(books), BINANCE_STREAMS_PER_CONNECTION):
+                chunk = books[i : i + BINANCE_STREAMS_PER_CONNECTION]
+                tasks.append(asyncio.create_task(RUNNERS["binance"](chunk, _binance_snapshot, stop)))
+        else:
+            tasks.append(asyncio.create_task(RUNNERS[vid](books, stop)))
+    log.info("watching %d tokens, %d books over %d connections", len(targets), sum(len(b) for b in by_venue.values()), len(tasks))
     server = serve(state, port) if port else None
     seen: set = set()
     platform: dict | None = None

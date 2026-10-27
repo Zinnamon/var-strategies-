@@ -1,14 +1,19 @@
-"""WebSocket order-book feeds. Each feed has a pure `handle(book, message)` that applies
-one decoded message to a LocalBook, plus an async `run` that owns the connection.
+"""WebSocket order-book feeds. One connection per venue carries every watched symbol.
+Each venue has a pure `*_handle(book, message)` that applies one decoded message to a
+LocalBook (unit-tested with synthetic messages) and an async `run_*` that owns the
+connection and routes messages to the right book.
 
-Binance   wss://stream.binance.com:9443/ws/<symbol>@depth@100ms, synced against a REST
-          snapshot the way Binance documents it (drop events with u <= lastUpdateId; the
-          first kept event must straddle lastUpdateId+1; each next event's U must equal
-          the previous u + 1, otherwise resync).
-Bybit v5  wss://stream.bybit.com/v5/public/spot, topic orderbook.<depth>.<symbol>:
-          a "snapshot" then "delta" messages; size 0 deletes; `u` must increase by 1.
-OKX       wss://ws.okx.com:8443/ws/v5/public, channel "books" (400 levels): action
-          "snapshot" then "update"; sz 0 deletes; prevSeqId must equal last seqId.
+Binance   wss://stream.binance.com:9443/stream?streams=<a>@depth@100ms/<b>@depth@100ms
+          Each book is synced against a REST snapshot the way Binance documents it:
+          drop events with u <= lastUpdateId, the first kept event must straddle
+          lastUpdateId+1, and each later event's U must equal the previous u + 1,
+          otherwise resync.
+Bybit v5  wss://stream.bybit.com/v5/public/spot, topics orderbook.<depth>.<symbol>
+          (10 per subscribe message): a "snapshot" then "delta"s; size 0 deletes;
+          `u` must increase by 1.
+OKX       wss://ws.okx.com:8443/ws/v5/public, channel "books" (400 levels) per instId:
+          action "snapshot" then "update"; sz 0 deletes; prevSeqId must equal the
+          last seqId.
 """
 
 from __future__ import annotations
@@ -18,13 +23,15 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from varbot.live.book import LocalBook
 
 log = logging.getLogger(__name__)
 
 SnapshotFn = Callable[[str], Awaitable[dict]]
+BINANCE_STREAMS_PER_CONNECTION = 100  # Binance allows up to 1024; keep reconnects cheap
+BYBIT_ARGS_PER_MESSAGE = 10
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +45,7 @@ class BinanceSync:
     buffer: list[dict] = field(default_factory=list)
     snapshot_id: int | None = None
     first_applied: bool = False
+    fetching: bool = False
 
 
 def binance_apply_snapshot(book: LocalBook, sync: BinanceSync, snapshot: dict) -> None:
@@ -77,38 +85,57 @@ def binance_handle(book: LocalBook, sync: BinanceSync, ev: dict) -> str:
     return "applied"
 
 
-async def run_binance(book: LocalBook, snapshot_fn: SnapshotFn, stop: asyncio.Event) -> None:
+async def _binance_sync_one(book: LocalBook, sync: BinanceSync, snapshot_fn: SnapshotFn) -> None:
+    if sync.fetching:
+        return
+    sync.fetching = True
+    try:
+        snap = await snapshot_fn(book.symbol)
+        binance_apply_snapshot(book, sync, snap)
+        log.info("binance %s synced at %s", book.symbol, book.last_update_id)
+    except Exception as exc:  # noqa: BLE001 - keep the feed alive
+        log.warning("binance snapshot %s failed: %s", book.symbol, exc)
+        await asyncio.sleep(2)
+    finally:
+        sync.fetching = False
+
+
+async def run_binance(books: Sequence[LocalBook], snapshot_fn: SnapshotFn, stop: asyncio.Event) -> None:
     import websockets
 
-    url = f"wss://stream.binance.com:9443/ws/{book.symbol.lower()}@depth@100ms"
-    sync = BinanceSync()
+    by_symbol = {b.symbol.upper(): b for b in books}
+    streams = "/".join(f"{b.symbol.lower()}@depth@100ms" for b in books)
+    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
     while not stop.is_set():
+        syncs = {s: BinanceSync() for s in by_symbol}
+        pending: set[asyncio.Task] = set()
         try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
-                book.desync("connecting")
-                sync = BinanceSync()
-                need_snapshot = True
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**23) as ws:
+                for b in books:
+                    b.desync("connecting")
                 async for raw in ws:
                     if stop.is_set():
                         break
-                    ev = json.loads(raw)
+                    msg = json.loads(raw)
+                    ev = msg.get("data", msg)
+                    sym = (ev.get("s") or "").upper()
+                    book = by_symbol.get(sym)
+                    if book is None:
+                        continue
+                    sync = syncs[sym]
                     status = binance_handle(book, sync, ev)
-                    if status == "resync":
-                        need_snapshot = True
-                    if need_snapshot and sync.buffer:
-                        need_snapshot = False
-                        try:
-                            snap = await snapshot_fn(book.symbol)
-                            binance_apply_snapshot(book, sync, snap)
-                            log.info("binance %s synced at %s", book.symbol, book.last_update_id)
-                        except Exception as exc:  # noqa: BLE001 - keep the feed alive
-                            log.warning("binance snapshot %s failed: %s", book.symbol, exc)
-                            need_snapshot = True
-                            await asyncio.sleep(2)
+                    if status in ("buffered", "resync") and not book.synced and not sync.fetching:
+                        task = asyncio.create_task(_binance_sync_one(book, sync, snapshot_fn))
+                        pending.add(task)
+                        task.add_done_callback(pending.discard)
         except Exception as exc:  # noqa: BLE001
-            book.desync(f"connection error: {exc}")
-            log.warning("binance ws %s: %s; reconnecting", book.symbol, exc)
+            for b in books:
+                b.desync(f"connection error: {exc}")
+            log.warning("binance ws (%d symbols): %s; reconnecting", len(books), exc)
             await asyncio.sleep(3)
+        finally:
+            for task in pending:
+                task.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +164,25 @@ def bybit_handle(book: LocalBook, msg: dict) -> str:
     return "applied"
 
 
-async def run_bybit(book: LocalBook, stop: asyncio.Event, depth: int = 200) -> None:
+def bybit_topic_symbol(topic: str) -> str:
+    return topic.rsplit(".", 1)[-1].upper()
+
+
+async def run_bybit(books: Sequence[LocalBook], stop: asyncio.Event, depth: int = 200) -> None:
     import websockets
 
     url = "wss://stream.bybit.com/v5/public/spot"
-    topic = f"orderbook.{depth}.{book.symbol}"
+    by_symbol = {b.symbol.upper(): b for b in books}
+    topics = [f"orderbook.{depth}.{b.symbol}" for b in books]
+
+    async def subscribe(ws, args):
+        for i in range(0, len(args), BYBIT_ARGS_PER_MESSAGE):
+            await ws.send(json.dumps({"op": "subscribe", "args": args[i : i + BYBIT_ARGS_PER_MESSAGE]}))
+
     while not stop.is_set():
         try:
-            async with websockets.connect(url, ping_interval=None, max_size=2**22) as ws:
-                await ws.send(json.dumps({"op": "subscribe", "args": [topic]}))
+            async with websockets.connect(url, ping_interval=None, max_size=2**23) as ws:
+                await subscribe(ws, topics)
                 last_ping = time.time()
                 while not stop.is_set():
                     try:
@@ -154,15 +191,18 @@ async def run_bybit(book: LocalBook, stop: asyncio.Event, depth: int = 200) -> N
                         raw = None
                     if raw is not None:
                         msg = json.loads(raw)
-                        if bybit_handle(book, msg) == "resync":
+                        topic = msg.get("topic")
+                        book = by_symbol.get(bybit_topic_symbol(topic)) if topic else None
+                        if book is not None and bybit_handle(book, msg) == "resync":
                             await ws.send(json.dumps({"op": "unsubscribe", "args": [topic]}))
                             await ws.send(json.dumps({"op": "subscribe", "args": [topic]}))
                     if time.time() - last_ping > 20:
                         await ws.send(json.dumps({"op": "ping"}))
                         last_ping = time.time()
         except Exception as exc:  # noqa: BLE001
-            book.desync(f"connection error: {exc}")
-            log.warning("bybit ws %s: %s; reconnecting", book.symbol, exc)
+            for b in books:
+                b.desync(f"connection error: {exc}")
+            log.warning("bybit ws (%d symbols): %s; reconnecting", len(books), exc)
             await asyncio.sleep(3)
 
 
@@ -192,15 +232,16 @@ def okx_handle(book: LocalBook, msg: dict) -> str:
     return "applied"
 
 
-async def run_okx(book: LocalBook, stop: asyncio.Event) -> None:
+async def run_okx(books: Sequence[LocalBook], stop: asyncio.Event) -> None:
     import websockets
 
     url = "wss://ws.okx.com:8443/ws/v5/public"
-    arg = {"channel": "books", "instId": book.symbol}
+    by_inst = {b.symbol.upper(): b for b in books}
+    args = [{"channel": "books", "instId": b.symbol} for b in books]
     while not stop.is_set():
         try:
-            async with websockets.connect(url, ping_interval=None, max_size=2**22) as ws:
-                await ws.send(json.dumps({"op": "subscribe", "args": [arg]}))
+            async with websockets.connect(url, ping_interval=None, max_size=2**23) as ws:
+                await ws.send(json.dumps({"op": "subscribe", "args": args}))
                 last_ping = time.time()
                 while not stop.is_set():
                     try:
@@ -209,15 +250,19 @@ async def run_okx(book: LocalBook, stop: asyncio.Event) -> None:
                         raw = None
                     if raw is not None and raw != "pong":
                         msg = json.loads(raw)
-                        if okx_handle(book, msg) == "resync":
+                        inst = ((msg.get("arg") or {}).get("instId") or "").upper()
+                        book = by_inst.get(inst)
+                        if book is not None and okx_handle(book, msg) == "resync":
+                            arg = {"channel": "books", "instId": book.symbol}
                             await ws.send(json.dumps({"op": "unsubscribe", "args": [arg]}))
                             await ws.send(json.dumps({"op": "subscribe", "args": [arg]}))
                     if time.time() - last_ping > 20:
                         await ws.send("ping")
                         last_ping = time.time()
         except Exception as exc:  # noqa: BLE001
-            book.desync(f"connection error: {exc}")
-            log.warning("okx ws %s: %s; reconnecting", book.symbol, exc)
+            for b in books:
+                b.desync(f"connection error: {exc}")
+            log.warning("okx ws (%d symbols): %s; reconnecting", len(books), exc)
             await asyncio.sleep(3)
 
 
