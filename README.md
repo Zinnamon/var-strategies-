@@ -150,7 +150,9 @@ A plain cron line works too:
 | Claude | Messages API with `web_search` and `web_fetch` server tools | model set by `VARBOT_MODEL`, default `claude-opus-5-5` |
 
 Responses are cached under `.varbot-cache/` (override with `VARBOT_CACHE_DIR`). Delete the
-directory to force fresh data.
+directory to force fresh data. Finished Claude research results are kept for three days
+under `.varbot-cache/research/`, so an interrupted run does not pay twice for the tokens
+it already covered.
 
 Variational's API publishes no asset class, so equities, ETFs, commodities and pre-IPO names
 are separated from crypto by `data/asset_classes.json` plus a name heuristic. Symbol-to-

@@ -30,6 +30,33 @@ def test_prompt_only_includes_known_facts():
     assert "market_cap_usd" not in p  # unknown fields are omitted, not sent as null
 
 
+def test_research_results_are_cached(tmp_path, monkeypatch):
+    from varbot.models import BusinessResearch
+    from varbot.research import business
+
+    monkeypatch.setattr(business.SETTINGS, "cache_dir", tmp_path)
+    monkeypatch.setattr(business.SETTINGS, "offline", False)
+    monkeypatch.setattr(business.SETTINGS, "anthropic_api_key", "k")
+    calls = []
+
+    def fake_live(symbol, f, name, *, max_turns):
+        calls.append(symbol)
+        return BusinessResearch(available=True, summary="fresh", activity_score=6, model="m")
+
+    monkeypatch.setattr(business, "_research_live", fake_live)
+    f = TokenFundamentals(coingecko_id="x-coin")
+    first = business.research_token("X", f)
+    second = business.research_token("X", f)
+    assert first.summary == "fresh" and second.summary == "fresh" and second.note == "cached"
+    assert calls == ["X"]  # the second call did not pay for a new run
+    business.research_token("X", f, force=True)
+    assert calls == ["X", "X"]
+    # failures are not cached
+    monkeypatch.setattr(business, "_research_live", lambda *a, **k: BusinessResearch(available=False, note="boom"))
+    assert business.research_token("Y", TokenFundamentals(coingecko_id="y")).note == "boom"
+    assert not (tmp_path / "research" / "y.json").exists()
+
+
 def test_schema_is_strict():
     assert SCHEMA["additionalProperties"] is False
     assert set(SCHEMA["required"]) == set(SCHEMA["properties"])

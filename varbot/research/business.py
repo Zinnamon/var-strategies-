@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+from pathlib import Path
 
 from varbot.config import SETTINGS
 from varbot.models import BusinessResearch, Development, TokenFundamentals
@@ -138,7 +140,40 @@ def to_research(data: dict, model: str) -> BusinessResearch:
     )
 
 
-def research_token(symbol: str, f: TokenFundamentals, listing_name: str | None = None, *, max_turns: int = 6) -> BusinessResearch:
+RESEARCH_TTL = 3 * 24 * 3600  # a finished research result is reused for three days
+
+
+def _cache_path(symbol: str, coin_id: str | None) -> Path:
+    key = (coin_id or symbol).lower().replace("/", "_")
+    return SETTINGS.cache_dir / "research" / f"{key}.json"
+
+
+def _load_cached(path: Path) -> BusinessResearch | None:
+    try:
+        entry = json.loads(path.read_text())
+        if time.time() - entry.get("saved_at", 0) > RESEARCH_TTL:
+            return None
+        r = BusinessResearch.model_validate(entry["research"])
+        return r if r.available else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _save_cached(path: Path, r: BusinessResearch) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"saved_at": time.time(), "research": r.model_dump(mode="json")}))
+    except OSError as exc:
+        log.debug("research cache write failed: %s", exc)
+
+
+def research_token(symbol: str, f: TokenFundamentals, listing_name: str | None = None, *, max_turns: int = 6, force: bool = False) -> BusinessResearch:
+    cache = _cache_path(symbol, f.coingecko_id)
+    if not force:
+        cached = _load_cached(cache)
+        if cached:
+            cached.note = "cached"
+            return cached
     if SETTINGS.offline:
         return BusinessResearch(available=False, note="offline mode")
     if not SETTINGS.anthropic_api_key:
@@ -147,6 +182,14 @@ def research_token(symbol: str, f: TokenFundamentals, listing_name: str | None =
         import anthropic
     except ImportError:
         return BusinessResearch(available=False, note="anthropic SDK not installed")
+    result = _research_live(symbol, f, listing_name, max_turns=max_turns)
+    if result.available:
+        _save_cached(cache, result)
+    return result
+
+
+def _research_live(symbol: str, f: TokenFundamentals, listing_name: str | None, *, max_turns: int) -> BusinessResearch:
+    import anthropic
 
     client = anthropic.Anthropic()
     model = SETTINGS.research_model
