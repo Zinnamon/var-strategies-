@@ -33,3 +33,19 @@ def test_prompt_only_includes_known_facts():
 def test_schema_is_strict():
     assert SCHEMA["additionalProperties"] is False
     assert set(SCHEMA["required"]) == set(SCHEMA["properties"])
+
+
+def test_schema_has_no_numeric_bounds():
+    """The API rejects minimum/maximum on numeric fields in output_config.format.schema."""
+    def walk(node):
+        if isinstance(node, dict):
+            assert "minimum" not in node and "maximum" not in node, node
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(SCHEMA)
+    assert to_research({"activity_score": 14}, "m").activity_score == 10
+    assert to_research({"activity_score": -2}, "m").activity_score == 0
