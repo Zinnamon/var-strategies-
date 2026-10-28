@@ -12,7 +12,7 @@ from varbot.analysis.classify import classify
 from varbot.analysis.scoring import score_all
 from varbot.models import AssetClassification, Listing, TokenFundamentals, TokenReport
 from varbot.research.business import research_token
-from varbot.sources import binance, coingecko, telegram, variational, venues, x_api
+from varbot.sources import binance, coingecko, github, telegram, variational, venues, x_api
 
 DEFAULT_VENUES = ["binance", "bybit_spot", "okex", "gdax", "kraken", "kucoin", "gate", "mxc", "bitget", "huobi", "crypto_com"]
 
@@ -103,12 +103,15 @@ def build_reports(
         if with_social:
             r.x = x_api.x_metrics(r.fundamentals.twitter_handle)
             r.telegram = telegram.telegram_metrics(r.fundamentals.telegram_channel)
+        r.github = github.github_activity(r.fundamentals.github_repos)
+        if r.github.available and r.fundamentals.commits_4w is None:
+            r.fundamentals.commits_4w = r.github.commits_30d
         if with_research:
             r.research = research_token(sym, r.fundamentals, r.listing.name)
         if with_pumps and r.fundamentals.coingecko_id:
             chart = coingecko.fetch_market_chart(r.fundamentals.coingecko_id)
             r.pumps = pumps_mod.analyse(chart, min_gain_pct=pump_min_gain_pct, window_days=pump_window_days) if chart else pumps_mod.PumpStats(note="price history unavailable")
-        r.scores = score_all(r.fundamentals, r.binance, r.x, r.telegram, r.research, r.exchanges, r.pumps)
+        r.scores = score_all(r.fundamentals, r.binance, r.x, r.telegram, r.research, r.exchanges, r.pumps, r.github)
         progress(f"done {r.listing.ticker}")
         return r
 

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import math
 
-from varbot.models import BinanceImpact, BusinessResearch, ExchangeListing, PumpStats, Scores, TelegramMetrics, TokenFundamentals, XMetrics
+from varbot.models import (
+    BinanceImpact, BusinessResearch, ExchangeListing, GitHubActivity, PumpStats, Scores, TelegramMetrics, TokenFundamentals, XMetrics,
+)
 
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 10.0) -> float:
@@ -104,38 +106,62 @@ def business_score(r: BusinessResearch) -> tuple[float | None, list[str]]:
     return float(r.activity_score), flags
 
 
-def activity_score(f: TokenFundamentals, x: XMetrics, tg: TelegramMetrics, e: ExchangeListing, r: BusinessResearch, p: PumpStats) -> tuple[float | None, list[str]]:
+def activity_score(
+    f: TokenFundamentals, x: XMetrics, tg: TelegramMetrics, e: ExchangeListing, r: BusinessResearch, p: PumpStats,
+    g: GitHubActivity | None = None,
+) -> tuple[float | None, list[str]]:
     """Is anyone still working on this? Posting, committing, listed widely, traded, and
-    (if research ran) shipping. Each signal 0-10, averaged over the signals we have."""
+    (if research ran) shipping. Each signal 0-10, averaged over the signals we have.
+    Team signals (posts, code, research) count double against market signals."""
     parts: list[float] = []
     flags: list[str] = []
+    g = g or GitHubActivity()
     if x.available:
-        parts.append(_clamp(x.posts_30d / 2))  # 20 posts a month -> 10
+        parts += [_clamp(x.posts_30d / 2)] * 2  # 20 posts a month -> 10
     if tg.available and tg.kind == "channel":
-        parts.append(_clamp(tg.posts_30d / 1.5))
-    if f.commits_4w is not None:
-        parts.append(_clamp(f.commits_4w / 4))  # 40 commits a month -> 10
+        parts += [_clamp(tg.posts_30d / 1.5)] * 2
+    if g.available:
+        if g.archived:
+            code = 0.0
+            flags.append(f"GitHub repo {g.repo} is archived")
+        elif g.days_since_push is None:
+            code = 0.0
+        elif g.days_since_push <= 7:
+            code = 10.0
+        elif g.days_since_push <= 30:
+            code = 7.0
+        elif g.days_since_push <= 90:
+            code = 4.0
+        else:
+            code = 1.0
+            flags.append(f"no GitHub push for {g.days_since_push} days ({g.repo})")
+        parts += [code] * 2
+    elif f.commits_4w is not None:
+        parts += [_clamp(f.commits_4w / 4)] * 2  # 40 commits a month -> 10
     if e.available:
         parts.append(_clamp(e.cex_count * 1.5))
         if e.total_spot_volume_usd is not None:
             parts.append(_log_scale(e.total_spot_volume_usd, 20_000, 20_000_000) or 0.0)
     if r.available and r.activity_score is not None:
-        parts.append(float(r.activity_score))
-        parts.append(float(r.activity_score))  # research counts double: it reads the actual news
+        parts += [float(r.activity_score)] * 3  # research counts triple: it reads the actual news
     if p.available and p.volume_30d_vs_180d is not None:
         parts.append(_clamp(p.volume_30d_vs_180d * 4))  # volume 2.5x its 6-month median -> 10
     if not parts:
         return None, flags
     score = sum(parts) / len(parts)
-    silent = (not x.available or x.posts_30d == 0) and (not tg.available or tg.posts_30d == 0)
-    if silent and (f.commits_4w or 0) == 0 and (x.available or tg.available or f.commits_4w is not None):
-        flags.append("no posts or commits in 30 days")
+    team_signals = (x.available or (tg.available and tg.kind == "channel") or g.available or f.commits_4w is not None or r.available)
+    if not team_signals:
+        flags.append("activity score reflects trading only: no X, Telegram-channel, GitHub or research data")
+    silent = (not x.available or x.posts_30d == 0) and (not tg.available or tg.kind != "channel" or tg.posts_30d == 0)
+    code_dead = (g.available and (g.days_since_push or 999) > 30) or (not g.available and (f.commits_4w or 0) == 0)
+    if team_signals and silent and code_dead:
+        flags.append("no posts or code pushes in 30 days")
     return score, flags
 
 
 def score_all(
     f: TokenFundamentals, b: BinanceImpact, x: XMetrics, tg: TelegramMetrics, r: BusinessResearch,
-    e: ExchangeListing | None = None, p: PumpStats | None = None,
+    e: ExchangeListing | None = None, p: PumpStats | None = None, g: GitHubActivity | None = None,
 ) -> Scores:
     e = e or ExchangeListing()
     p = p or PumpStats()
@@ -143,7 +169,7 @@ def score_all(
     soc, f2 = social_score(x, tg)
     fun, f3 = fundamentals_score(f)
     bus, f4 = business_score(r)
-    act, f5 = activity_score(f, x, tg, e, r, p)
+    act, f5 = activity_score(f, x, tg, e, r, p, g)
     weights = {"liquidity": (liq, 0.3), "social": (soc, 0.2), "fundamentals": (fun, 0.25), "business": (bus, 0.25)}
     present = [(v, w) for v, w in weights.values() if v is not None]
     overall = sum(v * w for v, w in present) / sum(w for _, w in present) if present else None

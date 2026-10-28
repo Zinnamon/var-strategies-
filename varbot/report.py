@@ -198,8 +198,14 @@ def token_markdown(r: TokenReport) -> str:
         )
     else:
         out.append(f"- Telegram: {tg.note or 'not run'}" + (f" (CoinGecko snapshot: {num(f.telegram_users)} users)" if f.telegram_users else ""))
-    if f.github_repos:
-        out.append(f"- GitHub: {f.github_repos[0]} · stars {num(f.github_stars)} · commits last 4w: {f.commits_4w if f.commits_4w is not None else 'n/a'}")
+    g = r.github
+    if g.available:
+        out.append(
+            f"- GitHub {g.repo}{' (archived)' if g.archived else ''}: last push {(g.last_push or '')[:10]} "
+            f"({g.days_since_push}d ago), {g.commits_30d} commits in 30d, stars {num(g.stars)}"
+        )
+    elif f.github_repos:
+        out.append(f"- GitHub: {f.github_repos[0]} · {g.note or 'not checked'} · CoinGecko commits last 4w: {f.commits_4w if f.commits_4w is not None else 'n/a'}")
     out += ["", "### Business activity"]
     if rs.available:
         out.append(f"- {rs.summary}")
@@ -259,16 +265,25 @@ def highlights(reports: list[TokenReport]) -> str:
     out: list[str] = []
     alive = sorted([r for r in reports if r.scores.activity is not None], key=lambda r: -(r.scores.activity or 0))[:15]
     if alive:
-        out += ["### Most active (signs of life: posts, commits, listings, volume, research)", "",
-                "| Token | Activity | FDV | Posts 30d (X / TG) | Commits 4w | CEXs | Spot vol 24h | Business | Notes |", "|---|---|---|---|---|---|---|---|---|"]
+        out += ["### Most active (signs of life: posts, code, listings, volume, research)", "",
+                "| Token | Activity | FDV | Posts 30d (X / TG) | Last code push | CEXs | Spot vol 24h | Business | Notes |", "|---|---|---|---|---|---|---|---|---|"]
         for r in alive:
-            f, e = r.fundamentals, r.exchanges
+            f, e, g = r.fundamentals, r.exchanges, r.github
             xp = str(r.x.posts_30d) if r.x.available else "-"
-            tp = str(r.telegram.posts_30d) if r.telegram.available else "-"
+            tp = ("group" if r.telegram.kind == "group" else str(r.telegram.posts_30d)) if r.telegram.available else "-"
+            if g.available:
+                push = f"{g.days_since_push}d ago" + (" (archived)" if g.archived else "")
+            elif f.commits_4w is not None:
+                push = f"{f.commits_4w} commits/4w"
+            else:
+                push = "-"
             note = (r.research.summary or "")[:90] if r.research.available else "; ".join(r.scores.flags[:2])[:90]
-            out.append(f"| {r.listing.symbol} | {score(r.scores.activity)} | {usd(f.fdv_usd)} | {xp} / {tp} | {f.commits_4w if f.commits_4w is not None else '-'} | "
+            out.append(f"| {r.listing.symbol} | {score(r.scores.activity)} | {usd(f.fdv_usd)} | {xp} / {tp} | {push} | "
                        f"{e.cex_count if e.available else '-'} | {usd(e.total_spot_volume_usd) if e.available else 'n/a'} | {score(r.scores.business)} | {note} |")
         out.append("")
+        if not any(r.x.available or r.research.available or r.github.available for r in alive):
+            out.append("No X, GitHub or research data in this run: the activity column reflects trading activity only. Add X_BEARER_TOKEN, or run with --research, for team activity.")
+            out.append("")
     pumpers = sorted([r for r in reports if r.pumps.available and r.pumps.pumps_12m >= 2],
                      key=lambda r: (-(r.pumps.propensity or 0), -r.pumps.pumps_12m))[:15]
     if pumpers:
@@ -320,6 +335,7 @@ def to_csv(reports: list[TokenReport]) -> str:
         "buy_10k_impact_pct", "buy_100k_impact_pct", "buy_1m_impact_pct", "usd_to_move_1pct", "usd_to_move_5pct", "usd_to_move_10pct",
         "other_venues_100k_impact_pct",
         "x_followers", "x_posts_30d", "x_engagement_pct", "tg_members", "tg_posts_30d",
+        "github_repo", "github_last_push", "github_days_since_push", "github_commits_30d", "github_archived",
         "pumps_12m", "pumps_ytd", "pump_max_gain_pct", "pump_median_gain_pct", "last_peak_date", "now_vs_last_peak_pct",
         "now_vs_12m_high_pct", "now_vs_12m_low_pct", "change_ytd_pct", "annualised_vol_pct", "volume_30d_vs_180d", "pump_propensity",
         "business_activity_score", "activity_score", "liquidity_score", "social_score", "fundamentals_score", "overall_score", "flags",
@@ -347,6 +363,7 @@ def to_csv(reports: list[TokenReport]) -> str:
             fill(r, 10_000), fill(r, 100_000), fill(r, 1_000_000), move(r, 1.0), move(r, 5.0), move(r, 10.0), others,
             r.x.followers if r.x.available else f.twitter_followers, r.x.posts_30d if r.x.available else None, r.x.engagement_rate_pct,
             r.telegram.members if r.telegram.available else f.telegram_users, r.telegram.posts_30d if r.telegram.available else None,
+            r.github.repo, (r.github.last_push or "")[:10] or None, r.github.days_since_push, r.github.commits_30d, r.github.archived if r.github.available else None,
             p.pumps_12m if p.available else None, p.pumps_ytd if p.available else None, p.max_gain_pct, p.median_gain_pct, p.last_peak_date, p.current_vs_last_peak_pct,
             p.current_vs_high_12m_pct, p.current_vs_low_12m_pct, p.change_ytd_pct, p.annualised_vol_pct, p.volume_30d_vs_180d, p.propensity,
             r.research.activity_score, r.scores.activity, r.scores.liquidity, r.scores.social, r.scores.fundamentals, r.scores.overall,

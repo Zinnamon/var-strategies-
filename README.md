@@ -47,6 +47,7 @@ cp .env.example .env   # fill in the keys you have; every key is optional
 | `ANTHROPIC_API_KEY` | `--research` (Claude web research) |
 | `X_BEARER_TOKEN` | X follower and engagement metrics |
 | `COINGECKO_API_KEY` | faster CoinGecko calls (public API works but is slow) |
+| `GITHUB_TOKEN` | optional; lifts GitHub code-activity lookups from 60 to 5000 calls an hour |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `varbot notify` |
 
 ## Use

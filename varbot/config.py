@@ -29,6 +29,7 @@ class Settings:
     x_bearer_token: str = field(default_factory=lambda: _env("X_BEARER_TOKEN"))
     coingecko_api_key: str = field(default_factory=lambda: _env("COINGECKO_API_KEY"))
     coingecko_pro: bool = field(default_factory=lambda: _flag("COINGECKO_PRO"))
+    github_token: str = field(default_factory=lambda: _env("GITHUB_TOKEN"))
     telegram_bot_token: str = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str = field(default_factory=lambda: _env("TELEGRAM_CHAT_ID"))
     offline: bool = field(default_factory=lambda: _flag("VARBOT_OFFLINE"))

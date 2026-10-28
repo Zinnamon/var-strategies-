@@ -67,6 +67,7 @@ class Http:
             "pro-api.coingecko.com": 0.3,
             "api.binance.com": 0.15,
             "api.x.com": 1.0,
+            "api.github.com": 0.5,
             "t.me": 1.0,
             "omni-client-api.prod.ap-northeast-1.variational.io": 1.0,
         }

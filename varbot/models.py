@@ -311,6 +311,19 @@ class PumpStats(BaseModel):
     propensity: Optional[float] = None  # 0-10, see analysis.pumps.propensity
 
 
+class GitHubActivity(BaseModel):
+    available: bool = False
+    note: str = ""
+    repo: Optional[str] = None
+    is_org: bool = False
+    archived: bool = False
+    stars: Optional[int] = None
+    last_push: Optional[str] = None
+    days_since_push: Optional[int] = None
+    commits_30d: Optional[int] = None
+    last_commit: Optional[str] = None
+
+
 class Scores(BaseModel):
     liquidity: Optional[float] = None  # 0-10
     social: Optional[float] = None
@@ -336,5 +349,6 @@ class TokenReport(BaseModel):
     x: XMetrics = Field(default_factory=XMetrics)
     telegram: TelegramMetrics = Field(default_factory=TelegramMetrics)
     research: BusinessResearch = Field(default_factory=BusinessResearch)
+    github: "GitHubActivity" = Field(default_factory=lambda: GitHubActivity())
     pumps: PumpStats = Field(default_factory=PumpStats)
     scores: Scores = Field(default_factory=Scores)
