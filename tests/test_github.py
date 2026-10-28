@@ -41,6 +41,23 @@ def test_github_activity_falls_back_to_org_repo(monkeypatch):
     assert a.available and a.repo == "org/live" and a.commits_30d == 1
 
 
+def test_stale_linked_repo_is_replaced_by_owner_newest(monkeypatch):
+    def fake_get(path, params=None):
+        if path == "/repos/org/old":
+            return {"full_name": "org/old", "pushed_at": "2023-01-01T00:00:00Z", "stargazers_count": 900, "archived": True}
+        if path == "/orgs/org/repos":
+            return [{"full_name": "org/new"}]
+        if path == "/repos/org/new":
+            return {"full_name": "org/new", "pushed_at": "2026-10-26T00:00:00Z", "stargazers_count": 40, "archived": False}
+        if path == "/repos/org/new/commits":
+            return [{"commit": {"committer": {"date": "2026-10-26T00:00:00Z"}}}] * 3
+        raise AssertionError(path)
+
+    monkeypatch.setattr(gh, "_get", fake_get)
+    a = gh.github_activity(["https://github.com/org/old"])
+    assert a.repo == "org/new" and not a.archived and a.commits_30d == 3
+
+
 def test_activity_score_uses_code_signal():
     from varbot.analysis.scoring import activity_score
     from varbot.models import BusinessResearch, ExchangeListing, GitHubActivity, PumpStats, TelegramMetrics, TokenFundamentals, XMetrics

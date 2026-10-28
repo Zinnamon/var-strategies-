@@ -90,9 +90,27 @@ def github_activity(repo_urls: list[str]) -> GitHubActivity:
             alt = most_recent_repo(owner)
             if alt and alt != full:
                 return github_activity([f"https://github.com/{alt}"])
-        return GitHubActivity(available=False, note=f"GitHub {exc.status} for {full}", repo=full)
+        note = f"GitHub {exc.status} for {full}"
+        if exc.status in (403, 429):
+            note += " (rate limited: set GITHUB_TOKEN)"
+        return GitHubActivity(available=False, note=note, repo=full)
     except OfflineError as exc:
         return GitHubActivity(available=False, note=str(exc), repo=full)
+
+    # CoinGecko often links a project's oldest repo. If that one is archived or has
+    # been quiet for 90 days, look at the owner's most recently pushed repo too and
+    # report whichever is more alive.
+    pushed = info.get("pushed_at")
+    stale = info.get("archived") or not pushed or (datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days > 90
+    if stale and repo:
+        alt = most_recent_repo(owner)
+        if alt and alt != full:
+            try:
+                alt_info = _get(f"/repos/{alt}")
+                if alt_info.get("pushed_at") and (not pushed or alt_info["pushed_at"] > pushed) and not alt_info.get("archived"):
+                    full, info = alt, alt_info
+            except (HttpError, OfflineError) as exc:
+                log.debug("github alt repo %s failed: %s", alt, exc)
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
     try:
         commits = _get(f"/repos/{full}/commits", {"since": since, "per_page": 100})
